@@ -1,0 +1,114 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrapAdmin() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == "christianwolff365@gmail.com";
+    }
+
+    function currentUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isActive() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && currentUser().data.status == "active";
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin()
+        || (isActive() && currentUser().data.role == "admin");
+    }
+
+    function validBaseProfile(data) {
+      return data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 30
+        && data.email == request.auth.token.email
+        && (data.photoURL == null || data.photoURL is string)
+        && data.status == "active"
+        && (data.role == "member" || (data.role == "admin" && isBootstrapAdmin()));
+    }
+
+    match /users/{userId} {
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && validBaseProfile(request.resource.data);
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isAdmin()
+        || (isActive()
+          && request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["displayName", "photoURL", "lastSeenAt"])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() >= 1
+          && request.resource.data.displayName.size() <= 30);
+      allow delete: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if isActive();
+      allow create: if isActive()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.type == "public"
+        && request.resource.data.isArchived == false
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.description is string
+        && request.resource.data.description.size() <= 100;
+      allow update: if isAdmin();
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isActive();
+        allow create: if isActive()
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.senderName is string
+          && request.resource.data.senderName.size() >= 1
+          && request.resource.data.senderName.size() <= 30
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 1000
+          && request.resource.data.isHidden == false;
+        allow update: if (isAdmin()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["isHidden"]))
+          || (isActive()
+            && resource.data.senderId == request.auth.uid
+            && resource.data.isHidden == false
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["text", "editedAt"])
+            && request.resource.data.text is string
+            && request.resource.data.text.size() >= 1
+            && request.resource.data.text.size() <= 1000);
+        allow delete: if false;
+      }
+    }
+
+    match /reports/{reportId} {
+      allow create: if isActive()
+        && reportId == request.auth.uid + "_" + request.resource.data.messageId
+        && request.resource.data.reportedBy == request.auth.uid
+        && request.resource.data.roomId is string
+        && request.resource.data.messageId is string
+        && request.resource.data.messagePreview is string
+        && request.resource.data.messagePreview.size() <= 140
+        && request.resource.data.reason is string
+        && request.resource.data.status == "pending"
+        && exists(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)/messages/$(request.resource.data.messageId))
+        && get(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)/messages/$(request.resource.data.messageId)).data.senderId != request.auth.uid;
+      allow read: if isAdmin();
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["status", "resolvedAt", "resolvedBy"])
+        && (request.resource.data.status == "resolved" || request.resource.data.status == "dismissed");
+      allow delete: if false;
+    }
+  }
+}

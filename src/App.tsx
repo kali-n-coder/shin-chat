@@ -1,0 +1,452 @@
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+  type User,
+} from 'firebase/auth'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore'
+import { adminEmail, auth, db, isFirebaseConfigured } from './lib/firebase'
+import { formatDateTime, formatMessageTime, friendlyAuthError, initials } from './lib/format'
+import type { ChatMessage, MessageReport, Room, UserProfile, UserRole, UserStatus } from './types'
+import { Icon } from './components/Icon'
+
+type Route = 'chat' | 'admin'
+
+function currentRoute(): Route {
+  return window.location.hash === '#/admin' ? 'admin' : 'chat'
+}
+
+async function ensureUserProfile(user: User): Promise<void> {
+  if (!db) return
+  const ref = doc(db, 'users', user.uid)
+  const snapshot = await getDoc(ref)
+  const bootstrapAdmin = Boolean(
+    adminEmail && user.emailVerified && user.email?.toLowerCase() === adminEmail,
+  )
+
+  if (!snapshot.exists()) {
+    await setDoc(ref, {
+      displayName: user.displayName?.trim() || user.email?.split('@')[0] || 'メンバー',
+      email: user.email ?? '',
+      photoURL: user.photoURL ?? null,
+      role: bootstrapAdmin ? 'admin' : 'member',
+      status: 'active',
+      createdAt: serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
+    })
+  } else {
+    await updateDoc(ref, {
+      lastSeenAt: serverTimestamp(),
+      ...(bootstrapAdmin ? { role: 'admin' } : {}),
+    })
+  }
+
+  const generalRef = doc(db, 'rooms', 'general')
+  if (!(await getDoc(generalRef)).exists()) {
+    await setDoc(generalRef, {
+      name: 'ラウンジ',
+      description: 'みんなで気軽に話す場所',
+      type: 'public',
+      isArchived: false,
+      createdBy: user.uid,
+      createdAt: serverTimestamp(),
+    })
+  }
+}
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null)
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [route, setRoute] = useState<Route>(currentRoute)
+  const [startupError, setStartupError] = useState('')
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(currentRoute())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  useEffect(() => {
+    if (!auth || !db) {
+      setLoading(false)
+      return
+    }
+
+    const firebaseAuth = auth
+    const firestore = db
+    let unsubscribeProfile: () => void = () => undefined
+    const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (nextUser) => {
+      unsubscribeProfile()
+      setUser(nextUser)
+      setProfile(null)
+      setStartupError('')
+      if (!nextUser) {
+        setLoading(false)
+        return
+      }
+
+      try {
+        await ensureUserProfile(nextUser)
+        unsubscribeProfile = onSnapshot(doc(firestore, 'users', nextUser.uid), (snapshot) => {
+          if (snapshot.exists()) {
+            setProfile({ id: snapshot.id, ...snapshot.data() } as UserProfile)
+          }
+          setLoading(false)
+        }, (error) => {
+          setStartupError(friendlyAuthError(error))
+          setLoading(false)
+        })
+      } catch (error) {
+        setStartupError(friendlyAuthError(error))
+        setLoading(false)
+      }
+    })
+
+    return () => {
+      unsubscribeAuth()
+      unsubscribeProfile()
+    }
+  }, [])
+
+  if (!isFirebaseConfigured) return <SetupScreen />
+  if (loading) return <LoadingScreen />
+  if (!user) return <AuthScreen />
+  if (startupError) return <ErrorScreen message={startupError} onLogout={() => auth && signOut(auth)} />
+  if (!profile) return <LoadingScreen />
+  if (profile.status === 'suspended') return <SuspendedScreen onLogout={() => auth && signOut(auth)} />
+  if (route === 'admin') return <AdminPanel user={user} profile={profile} />
+  return <ChatShell user={user} profile={profile} />
+}
+
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`brand ${compact ? 'brand--compact' : ''}`}>
+      <span className="brand-mark"><span /></span>
+      <span className="brand-name">Nagi</span>
+    </div>
+  )
+}
+
+function LoadingScreen() {
+  return <main className="center-screen"><div className="loading-mark"><span /></div><p>読み込んでいます</p></main>
+}
+
+function SetupScreen() {
+  return (
+    <main className="setup-screen">
+      <section className="setup-card">
+        <Brand />
+        <span className="eyebrow">SETUP REQUIRED</span>
+        <h1>Firebaseとの接続待ちです</h1>
+        <p>アプリ本体は準備できています。Firebase Web Appの設定値を環境変数へ追加すると、チャットが起動します。</p>
+        <div className="setup-note"><Icon name="alert" /><span>プロジェクト設定は <code>.env.example</code> の項目を使用します。</span></div>
+      </section>
+    </main>
+  )
+}
+
+function ErrorScreen({ message, onLogout }: { message: string; onLogout: () => void }) {
+  return (
+    <main className="center-screen">
+      <div className="status-card"><Icon name="alert" /><h1>接続できませんでした</h1><p>{message}</p><button className="button button--primary" onClick={() => location.reload()}>再読み込み</button><button className="text-button" onClick={onLogout}>ログアウト</button></div>
+    </main>
+  )
+}
+
+function SuspendedScreen({ onLogout }: { onLogout: () => void }) {
+  return (
+    <main className="center-screen">
+      <div className="status-card"><Icon name="shield" /><h1>アカウントは利用停止中です</h1><p>管理者によって利用が一時停止されています。</p><button className="button button--secondary" onClick={onLogout}>ログアウト</button></div>
+    </main>
+  )
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!auth) return
+    setBusy(true)
+    setError('')
+    try {
+      if (mode === 'register') {
+        const credential = await createUserWithEmailAndPassword(auth, email.trim(), password)
+        await updateProfile(credential.user, { displayName: name.trim() })
+        await sendEmailVerification(credential.user)
+      } else {
+        await signInWithEmailAndPassword(auth, email.trim(), password)
+      }
+    } catch (authError) {
+      setError(friendlyAuthError(authError))
+      setBusy(false)
+    }
+  }
+
+  const googleLogin = async () => {
+    if (!auth) return
+    setBusy(true)
+    setError('')
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider())
+    } catch (authError) {
+      setError(friendlyAuthError(authError))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="auth-layout">
+      <section className="auth-intro">
+        <Brand />
+        <div className="auth-copy"><span className="eyebrow">A QUIET PLACE TO TALK</span><h1>言葉が、自然に<br />つながる場所。</h1><p>気負わずに話せる、シンプルなチャットスペースです。</p></div>
+        <div className="auth-orbit auth-orbit--one" /><div className="auth-orbit auth-orbit--two" />
+        <p className="auth-footnote">穏やかに、いつもの会話を。</p>
+      </section>
+      <section className="auth-panel">
+        <div className="auth-card">
+          <div className="auth-mobile-brand"><Brand /></div>
+          <span className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'JOIN NAGI'}</span>
+          <h2>{mode === 'login' ? 'おかえりなさい' : 'アカウントを作成'}</h2>
+          <p className="auth-subtitle">{mode === 'login' ? '続けるにはログインしてください。' : 'すぐに会話を始められます。'}</p>
+          <button className="google-button" type="button" onClick={googleLogin} disabled={busy}><span className="google-g">G</span>Googleで続ける</button>
+          <div className="divider"><span>または</span></div>
+          <form onSubmit={submit}>
+            {mode === 'register' && <label>表示名<input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required maxLength={30} placeholder="なぎ 太郎" /></label>}
+            <label>メールアドレス<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required placeholder="you@example.com" /></label>
+            <label>パスワード<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} required placeholder="8文字以上" /></label>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <button className="button button--primary button--full" disabled={busy}>{busy ? '処理中…' : mode === 'login' ? 'ログイン' : 'はじめる'}</button>
+          </form>
+          <p className="auth-switch">{mode === 'login' ? 'はじめてですか？' : 'アカウントをお持ちですか？'} <button onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}>{mode === 'login' ? '新規登録' : 'ログイン'}</button></p>
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function Avatar({ name, photoURL, size = 'md' }: { name: string; photoURL: string | null; size?: 'sm' | 'md' | 'lg' }) {
+  return photoURL ? <img className={`avatar avatar--${size}`} src={photoURL} alt="" referrerPolicy="no-referrer" /> : <span className={`avatar avatar--${size} avatar--fallback`}>{initials(name)}</span>
+}
+
+function ChatShell({ user, profile }: { user: User; profile: UserProfile }) {
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [selectedRoomId, setSelectedRoomId] = useState('general')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [text, setText] = useState('')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [newRoomOpen, setNewRoomOpen] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [sending, setSending] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const selectedRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId), [rooms, selectedRoomId])
+
+  useEffect(() => {
+    if (!db) return
+    return onSnapshot(query(collection(db, 'rooms'), where('isArchived', '==', false)), (snapshot) => {
+      const nextRooms = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Room))
+      nextRooms.sort((a, b) => a.id === 'general' ? -1 : b.id === 'general' ? 1 : a.name.localeCompare(b.name, 'ja'))
+      setRooms(nextRooms)
+      if (nextRooms.length && !nextRooms.some((room) => room.id === selectedRoomId)) setSelectedRoomId(nextRooms[0].id)
+    }, () => setNotice('チャンネルを読み込めませんでした。'))
+  }, [selectedRoomId])
+
+  useEffect(() => {
+    if (!db || !selectedRoomId) return
+    const messagesQuery = query(collection(db, 'rooms', selectedRoomId, 'messages'), orderBy('createdAt', 'desc'), limit(50))
+    return onSnapshot(messagesQuery, (snapshot) => {
+      setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as ChatMessage)).reverse())
+      requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
+    }, () => setNotice('メッセージを読み込めませんでした。'))
+  }, [selectedRoomId])
+
+  const sendMessage = async (event: FormEvent) => {
+    event.preventDefault()
+    const cleanText = text.trim()
+    if (!db || !cleanText || sending) return
+    setText('')
+    setSending(true)
+    try {
+      await addDoc(collection(db, 'rooms', selectedRoomId, 'messages'), {
+        text: cleanText,
+        senderId: user.uid,
+        senderName: profile.displayName,
+        senderPhotoURL: profile.photoURL,
+        isHidden: false,
+        createdAt: serverTimestamp(),
+      })
+    } catch (error) {
+      setText(cleanText)
+      setNotice(friendlyAuthError(error))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const reportMessage = async (message: ChatMessage) => {
+    if (!db || message.senderId === user.uid) return
+    if (!window.confirm('このメッセージを管理者へ報告しますか？')) return
+    try {
+      await setDoc(doc(db, 'reports', `${user.uid}_${message.id}`), {
+        roomId: selectedRoomId,
+        messageId: message.id,
+        messagePreview: message.text.slice(0, 140),
+        reportedBy: user.uid,
+        reason: '不適切な内容',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      })
+      setNotice('管理者へ報告しました。')
+    } catch (error) {
+      setNotice(friendlyAuthError(error))
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      {sidebarOpen && <button className="sidebar-backdrop" aria-label="メニューを閉じる" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
+        <div className="sidebar-top"><Brand compact /><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="閉じる"><Icon name="close" /></button></div>
+        <div className="sidebar-label"><span>チャンネル</span><button className="icon-button icon-button--small" onClick={() => setNewRoomOpen(true)} aria-label="チャンネルを追加"><Icon name="plus" /></button></div>
+        <nav className="room-list" aria-label="チャンネル一覧">
+          {rooms.map((room) => <button key={room.id} className={`room-item ${selectedRoomId === room.id ? 'room-item--active' : ''}`} onClick={() => { setSelectedRoomId(room.id); setSidebarOpen(false) }}><Icon name="hash" /><span>{room.name}</span></button>)}
+        </nav>
+        <div className="sidebar-spacer" />
+        {profile.role === 'admin' && <a className="admin-link" href="#/admin"><Icon name="shield" />管理ページ</a>}
+        <button className="profile-summary" onClick={() => setProfileOpen(true)}><Avatar name={profile.displayName} photoURL={profile.photoURL} /><span><strong>{profile.displayName}</strong><small>{profile.role === 'admin' ? '管理者' : 'オンライン'}</small></span><Icon name="more" /></button>
+      </aside>
+      <main className="chat-main">
+        <header className="chat-header"><button className="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="メニュー"><Icon name="menu" /></button><div className="channel-heading"><div><Icon name="hash" /><h1>{selectedRoom?.name ?? 'チャンネル'}</h1></div><p>{selectedRoom?.description ?? ''}</p></div><div className="header-meta"><span className="presence-dot" />Live</div></header>
+        <section className="message-area" aria-live="polite">
+          <div className="channel-intro"><span className="channel-icon"><Icon name="hash" /></span><h2>{selectedRoom?.name ?? 'チャンネル'}へようこそ</h2><p>{selectedRoom?.description || 'ここから会話が始まります。'}</p></div>
+          {messages.map((message, index) => {
+            const previous = messages[index - 1]
+            const grouped = previous?.senderId === message.senderId
+            return <article className={`message ${grouped ? 'message--grouped' : ''}`} key={message.id}>{!grouped && <Avatar name={message.senderName} photoURL={message.senderPhotoURL} />}<div className="message-body">{!grouped && <div className="message-meta"><strong>{message.senderName}</strong><time>{formatMessageTime(message.createdAt)}</time></div>}<p className={message.isHidden ? 'message-hidden' : ''}>{message.isHidden ? 'このメッセージは管理者により非表示になりました。' : message.text}</p></div>{!message.isHidden && message.senderId !== user.uid && <button className="message-action" onClick={() => reportMessage(message)} aria-label="報告"><Icon name="flag" /></button>}</article>
+          })}
+          <div ref={messagesEndRef} />
+        </section>
+        <form className="composer" onSubmit={sendMessage}><textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} maxLength={1000} rows={1} placeholder={`#${selectedRoom?.name ?? 'チャンネル'} にメッセージ`} aria-label="メッセージ" /><button className="send-button" disabled={!text.trim() || sending} aria-label="送信"><Icon name="send" /></button><span className="composer-hint">Enterで送信 · Shift + Enterで改行</span></form>
+      </main>
+      {profileOpen && <ProfileDialog profile={profile} onClose={() => setProfileOpen(false)} />}
+      {newRoomOpen && <NewRoomDialog user={user} onClose={() => setNewRoomOpen(false)} onCreated={(id) => { setSelectedRoomId(id); setNewRoomOpen(false) }} />}
+      {notice && <div className="toast" role="status"><Icon name="check" />{notice}<button onClick={() => setNotice('')} aria-label="閉じる"><Icon name="close" /></button></div>}
+    </div>
+  )
+}
+
+function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  return <div className="modal-layer" role="presentation"><button className="modal-backdrop" onClick={onClose} aria-label="閉じる" /><section className="modal" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="閉じる"><Icon name="close" /></button></header>{children}</section></div>
+}
+
+function ProfileDialog({ profile, onClose }: { profile: UserProfile; onClose: () => void }) {
+  const [name, setName] = useState(profile.displayName)
+  const [busy, setBusy] = useState(false)
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!db || !name.trim()) return
+    setBusy(true)
+    await updateDoc(doc(db, 'users', profile.id), { displayName: name.trim(), lastSeenAt: serverTimestamp() })
+    if (auth?.currentUser) await updateProfile(auth.currentUser, { displayName: name.trim() })
+    onClose()
+  }
+  return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label><button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
+}
+
+function NewRoomDialog({ user, onClose, onCreated }: { user: User; onClose: () => void; onCreated: (id: string) => void }) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!db || !name.trim()) return
+    setBusy(true)
+    try {
+      const room = await addDoc(collection(db, 'rooms'), { name: name.trim(), description: description.trim(), type: 'public', isArchived: false, createdBy: user.uid, createdAt: serverTimestamp() })
+      onCreated(room.id)
+    } finally { setBusy(false) }
+  }
+  return <Modal title="チャンネルを作成" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>チャンネル名<input value={name} onChange={(e) => setName(e.target.value)} required maxLength={40} placeholder="例：雑談" /></label><label>説明（任意）<input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={100} placeholder="どんな場所かをひとこと" /></label><button className="button button--primary button--full" disabled={busy}>作成する</button></form></Modal>
+}
+
+function AdminPanel({ user, profile }: { user: User; profile: UserProfile }) {
+  const [users, setUsers] = useState<UserProfile[]>([])
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [reports, setReports] = useState<MessageReport[]>([])
+  const [tab, setTab] = useState<'overview' | 'users' | 'reports'>('overview')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    if (!db || profile.role !== 'admin') return
+    const stopUsers = onSnapshot(collection(db, 'users'), (snapshot) => setUsers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as UserProfile))))
+    const stopRooms = onSnapshot(collection(db, 'rooms'), (snapshot) => setRooms(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Room))))
+    const stopReports = onSnapshot(query(collection(db, 'reports'), where('status', '==', 'pending')), (snapshot) => setReports(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as MessageReport))))
+    return () => { stopUsers(); stopRooms(); stopReports() }
+  }, [profile.role])
+
+  if (profile.role !== 'admin') return <main className="center-screen"><div className="status-card"><Icon name="shield" /><h1>管理者専用です</h1><p>このページを表示する権限がありません。</p><a className="button button--primary" href="#/">チャットへ戻る</a></div></main>
+
+  const setUserStatus = async (target: UserProfile, status: UserStatus) => {
+    if (!db || target.id === user.uid) return
+    await updateDoc(doc(db, 'users', target.id), { status })
+    setNotice(status === 'active' ? '利用を再開しました。' : 'アカウントを停止しました。')
+  }
+  const setUserRole = async (target: UserProfile, role: UserRole) => {
+    if (!db || target.id === user.uid) return
+    await updateDoc(doc(db, 'users', target.id), { role })
+    setNotice('権限を更新しました。')
+  }
+  const resolveReport = async (report: MessageReport, hide: boolean) => {
+    if (!db) return
+    if (hide) await updateDoc(doc(db, 'rooms', report.roomId, 'messages', report.messageId), { isHidden: true })
+    await updateDoc(doc(db, 'reports', report.id), { status: hide ? 'resolved' : 'dismissed', resolvedAt: serverTimestamp(), resolvedBy: user.uid })
+    setNotice(hide ? 'メッセージを非表示にしました。' : '報告を却下しました。')
+  }
+
+  return (
+    <div className="admin-shell">
+      <aside className="admin-sidebar"><Brand compact /><div className="admin-title"><Icon name="shield" /><span>管理ページ</span></div><nav><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}><Icon name="message" />概要</button><button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}><Icon name="users" />ユーザー</button><button className={tab === 'reports' ? 'active' : ''} onClick={() => setTab('reports')}><Icon name="flag" />報告<span className="nav-count">{reports.length}</span></button></nav><a href="#/"><Icon name="back" />チャットへ戻る</a></aside>
+      <main className="admin-main"><header><div><span className="eyebrow">ADMIN CONSOLE</span><h1>{tab === 'overview' ? '概要' : tab === 'users' ? 'ユーザー管理' : '報告された内容'}</h1></div><Avatar name={profile.displayName} photoURL={profile.photoURL} /></header>
+        {tab === 'overview' && <><section className="stat-grid"><Stat label="登録ユーザー" value={users.length} icon="users" /><Stat label="公開チャンネル" value={rooms.filter((room) => !room.isArchived).length} icon="hash" /><Stat label="未対応の報告" value={reports.length} icon="flag" /></section><section className="admin-card"><div className="card-heading"><div><h2>対応が必要な項目</h2><p>未処理の報告を新しい順に表示します。</p></div></div>{reports.length ? <div className="compact-list">{reports.slice(0, 5).map((report) => <button key={report.id} onClick={() => setTab('reports')}><span className="list-icon"><Icon name="flag" /></span><span><strong>{report.messagePreview}</strong><small>{formatDateTime(report.createdAt)}</small></span><Icon name="back" className="rotate-180" /></button>)}</div> : <EmptyState text="現在、対応待ちの報告はありません。" />}</section></>}
+        {tab === 'users' && <section className="admin-card table-card"><div className="card-heading"><div><h2>ユーザー</h2><p>利用状態と管理権限を変更できます。</p></div><span className="pill">{users.length} users</span></div><div className="user-table"><div className="table-row table-head"><span>ユーザー</span><span>権限</span><span>状態</span><span>操作</span></div>{users.map((target) => <div className="table-row" key={target.id}><span className="table-user"><Avatar name={target.displayName} photoURL={target.photoURL} size="sm" /><span><strong>{target.displayName}</strong><small>{target.email}</small></span></span><span><select aria-label={`${target.displayName}の権限`} value={target.role} disabled={target.id === user.uid} onChange={(e) => setUserRole(target, e.target.value as UserRole)}><option value="member">メンバー</option><option value="admin">管理者</option></select></span><span><span className={`status-badge status-badge--${target.status}`}>{target.status === 'active' ? '利用中' : '停止中'}</span></span><span><button className="small-button" disabled={target.id === user.uid} onClick={() => setUserStatus(target, target.status === 'active' ? 'suspended' : 'active')}>{target.status === 'active' ? '停止' : '再開'}</button></span></div>)}</div></section>}
+        {tab === 'reports' && <section className="admin-card"><div className="card-heading"><div><h2>未対応の報告</h2><p>内容を確認し、非表示または却下できます。</p></div></div>{reports.length ? <div className="report-list">{reports.map((report) => <article key={report.id}><div className="report-top"><span className="status-badge status-badge--pending">未対応</span><time>{formatDateTime(report.createdAt)}</time></div><blockquote>{report.messagePreview}</blockquote><p>理由：{report.reason}</p><div><button className="button button--danger" onClick={() => resolveReport(report, true)}>非表示にする</button><button className="button button--ghost" onClick={() => resolveReport(report, false)}>問題なし</button></div></article>)}</div> : <EmptyState text="すべての報告に対応済みです。" />}</section>}
+      </main>
+      {notice && <div className="toast" role="status"><Icon name="check" />{notice}<button onClick={() => setNotice('')} aria-label="閉じる"><Icon name="close" /></button></div>}
+    </div>
+  )
+}
+
+function Stat({ label, value, icon }: { label: string; value: number; icon: 'users' | 'hash' | 'flag' }) {
+  return <div className="stat-card"><span className="stat-icon"><Icon name={icon} /></span><div><strong>{value}</strong><span>{label}</span></div></div>
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="empty-state"><span><Icon name="check" /></span><p>{text}</p></div>
+}
