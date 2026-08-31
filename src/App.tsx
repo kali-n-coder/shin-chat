@@ -15,19 +15,23 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
+  startAfter,
   Timestamp,
   updateDoc,
   where,
+  type DocumentData,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore'
 import { adminEmail, auth, db, isFirebaseConfigured } from './lib/firebase'
 import { formatDateTime, formatMessageTime, friendlyAuthError, initials } from './lib/format'
-import type { ChatMessage, MessageReport, Room, UserProfile, UserRole, UserStatus } from './types'
+import type { ChatMessage, DirectConversation, MessageReport, PublicProfile, Room, UserProfile, UserRole, UserStatus } from './types'
 import { Icon } from './components/Icon'
 
 type Route = 'chat' | 'admin'
@@ -40,10 +44,14 @@ const demoRooms: Room[] = [
   { id: 'ideas', name: 'アイデア', description: '思いついたことを共有する場所', type: 'public', isArchived: false, createdBy: 'demo-user' },
   { id: 'music', name: '音楽', description: '最近聴いている音楽の話', type: 'public', isArchived: false, createdBy: 'demo-user' },
 ]
+const demoConversations: DirectConversation[] = [
+  { id: 'demo-user_member-1', participantIds: ['demo-user', 'member-1'], participantProfiles: { 'demo-user': { displayName: 'なぎ 太郎', photoURL: null }, 'member-1': { displayName: '水野 あおい', photoURL: null } }, lastMessage: 'こんにちは。今日もゆっくり話しましょう。', lastMessageAt: Timestamp.fromDate(new Date(Date.now() - 18 * 60_000)) },
+  { id: 'demo-user_member-2', participantIds: ['demo-user', 'member-2'], participantProfiles: { 'demo-user': { displayName: 'なぎ 太郎', photoURL: null }, 'member-2': { displayName: '佐倉 凛', photoURL: null } }, lastMessage: 'またあとで話しましょう。', lastMessageAt: Timestamp.fromDate(new Date(Date.now() - 65 * 60_000)) },
+]
 const demoMessages: ChatMessage[] = [
   { id: 'demo-1', text: 'こんにちは。今日もゆっくり話しましょう。', senderId: 'member-1', senderName: '水野 あおい', senderPhotoURL: null, isHidden: false, createdAt: Timestamp.fromDate(new Date(Date.now() - 18 * 60_000)) },
   { id: 'demo-2', text: '新しいチャット、落ち着いた雰囲気でいいですね。', senderId: 'demo-user', senderName: 'なぎ 太郎', senderPhotoURL: null, isHidden: false, createdAt: Timestamp.fromDate(new Date(Date.now() - 12 * 60_000)) },
-  { id: 'demo-3', text: 'うん。余白があると会話に集中しやすい気がします。', senderId: 'member-2', senderName: '佐倉 凛', senderPhotoURL: null, isHidden: false, createdAt: Timestamp.fromDate(new Date(Date.now() - 5 * 60_000)) },
+  { id: 'demo-3', text: 'うん。余白があると会話に集中しやすい気がします。', senderId: 'member-1', senderName: '水野 あおい', senderPhotoURL: null, isHidden: false, createdAt: Timestamp.fromDate(new Date(Date.now() - 5 * 60_000)) },
 ]
 const demoUsers: UserProfile[] = [
   demoProfile,
@@ -52,7 +60,7 @@ const demoUsers: UserProfile[] = [
   { id: 'member-3', displayName: '山本 海', email: 'umi@example.com', photoURL: null, role: 'member', status: 'suspended' },
 ]
 const demoReports: MessageReport[] = [
-  { id: 'demo-report', roomId: 'general', messageId: 'reported-message', messagePreview: 'この文章は管理者による確認待ちのサンプルです。', reportedBy: 'member-2', reason: '不適切な内容', status: 'pending', createdAt: Timestamp.fromDate(new Date(Date.now() - 25 * 60_000)) },
+  { id: 'demo-report', targetType: 'conversation', targetId: 'demo-user_member-2', messageId: 'reported-message', messagePreview: 'この文章は管理者による確認待ちのサンプルです。', reportedBy: 'member-2', reason: '不適切な内容', status: 'pending', createdAt: Timestamp.fromDate(new Date(Date.now() - 25 * 60_000)) },
 ]
 
 function currentRoute(): Route {
@@ -83,6 +91,12 @@ async function ensureUserProfile(user: User): Promise<void> {
       ...(bootstrapAdmin ? { role: 'admin' } : {}),
     })
   }
+
+  await setDoc(doc(db, 'publicProfiles', user.uid), {
+    displayName: user.displayName?.trim() || user.email?.split('@')[0] || 'メンバー',
+    photoURL: user.photoURL ?? null,
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
 
   const generalRef = doc(db, 'rooms', 'general')
   if (!(await getDoc(generalRef)).exists()) {
@@ -286,17 +300,48 @@ function Avatar({ name, photoURL, size = 'md' }: { name: string; photoURL: strin
 
 function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; profile: UserProfile; demo?: boolean }) {
   const [rooms, setRooms] = useState<Room[]>(demo ? demoRooms : [])
+  const [conversations, setConversations] = useState<DirectConversation[]>(demo ? demoConversations : [])
+  const [activeKind, setActiveKind] = useState<'conversation' | 'room'>(demo ? 'conversation' : 'room')
+  const [selectedConversationId, setSelectedConversationId] = useState(demo ? demoConversations[0].id : '')
   const [selectedRoomId, setSelectedRoomId] = useState('general')
   const [messages, setMessages] = useState<ChatMessage[]>(demo ? demoMessages : [])
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([])
+  const [oldestCursor, setOldestCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null)
+  const [hasOlder, setHasOlder] = useState(demo)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const [text, setText] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [newDirectOpen, setNewDirectOpen] = useState(false)
   const [newRoomOpen, setNewRoomOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const selectedRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId), [rooms, selectedRoomId])
+  const selectedConversation = useMemo(() => conversations.find((item) => item.id === selectedConversationId), [conversations, selectedConversationId])
+  const otherParticipant = selectedConversation?.participantIds.find((id) => id !== user.uid)
+  const otherProfile = otherParticipant ? selectedConversation?.participantProfiles[otherParticipant] : undefined
+  const activeId = activeKind === 'conversation' ? selectedConversationId : selectedRoomId
+  const allMessages = [...olderMessages, ...messages]
+
+  useEffect(() => {
+    if (demo || !db) return
+    const conversationsQuery = query(
+      collection(db, 'conversations'),
+      where('participantIds', 'array-contains', user.uid),
+      orderBy('updatedAt', 'desc'),
+      limit(30),
+    )
+    return onSnapshot(conversationsQuery, (snapshot) => {
+      const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as DirectConversation))
+      setConversations(next)
+      if (!selectedConversationId && next.length) {
+        setSelectedConversationId(next[0].id)
+        setActiveKind('conversation')
+      }
+    }, () => setNotice('個別チャットを読み込めませんでした。'))
+  }, [demo, selectedConversationId, user.uid])
 
   useEffect(() => {
     if (demo) return
@@ -311,13 +356,32 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
 
   useEffect(() => {
     if (demo) return
-    if (!db || !selectedRoomId) return
-    const messagesQuery = query(collection(db, 'rooms', selectedRoomId, 'messages'), orderBy('createdAt', 'desc'), limit(50))
+    if (!db || !activeId) return
+    setOlderMessages([])
+    setOldestCursor(null)
+    const parentCollection = activeKind === 'conversation' ? 'conversations' : 'rooms'
+    const messagesQuery = query(collection(db, parentCollection, activeId, 'messages'), orderBy('createdAt', 'desc'), limit(50))
     return onSnapshot(messagesQuery, (snapshot) => {
       setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as ChatMessage)).reverse())
+      setOldestCursor((current) => current ?? snapshot.docs.at(-1) ?? null)
+      setHasOlder(snapshot.size === 50)
       requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
     }, () => setNotice('メッセージを読み込めませんでした。'))
-  }, [demo, selectedRoomId])
+  }, [activeId, activeKind, demo])
+
+  const loadOlder = async () => {
+    if (demo) { setHasOlder(false); setNotice('プレビューでは、ここにさらに過去のメッセージが追加されます。'); return }
+    if (!db || !activeId || !oldestCursor || loadingOlder) return
+    setLoadingOlder(true)
+    try {
+      const parentCollection = activeKind === 'conversation' ? 'conversations' : 'rooms'
+      const snapshot = await getDocs(query(collection(db, parentCollection, activeId, 'messages'), orderBy('createdAt', 'desc'), startAfter(oldestCursor), limit(50)))
+      const older = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as ChatMessage)).reverse()
+      setOlderMessages((current) => [...older, ...current])
+      setOldestCursor(snapshot.docs.at(-1) ?? oldestCursor)
+      setHasOlder(snapshot.size === 50)
+    } catch (error) { setNotice(friendlyAuthError(error)) } finally { setLoadingOlder(false) }
+  }
 
   const sendMessage = async (event: FormEvent) => {
     event.preventDefault()
@@ -331,7 +395,8 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
     if (!db) return
     setSending(true)
     try {
-      await addDoc(collection(db, 'rooms', selectedRoomId, 'messages'), {
+      const parentCollection = activeKind === 'conversation' ? 'conversations' : 'rooms'
+      await addDoc(collection(db, parentCollection, activeId, 'messages'), {
         text: cleanText,
         senderId: user.uid,
         senderName: profile.displayName,
@@ -339,6 +404,9 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
         isHidden: false,
         createdAt: serverTimestamp(),
       })
+      if (activeKind === 'conversation') {
+        await updateDoc(doc(db, 'conversations', activeId), { lastMessage: cleanText.slice(0, 100), lastMessageAt: serverTimestamp(), updatedAt: serverTimestamp() })
+      }
     } catch (error) {
       setText(cleanText)
       setNotice(friendlyAuthError(error))
@@ -354,7 +422,8 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
     if (!db) return
     try {
       await setDoc(doc(db, 'reports', `${user.uid}_${message.id}`), {
-        roomId: selectedRoomId,
+        targetType: activeKind,
+        targetId: activeId,
         messageId: message.id,
         messagePreview: message.text.slice(0, 140),
         reportedBy: user.uid,
@@ -373,28 +442,39 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="メニューを閉じる" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
         <div className="sidebar-top"><Brand compact /><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="閉じる"><Icon name="close" /></button></div>
-        <div className="sidebar-label"><span>チャンネル</span><button className="icon-button icon-button--small" onClick={() => setNewRoomOpen(true)} aria-label="チャンネルを追加"><Icon name="plus" /></button></div>
+        <div className="sidebar-label"><span>メッセージ</span><button className="icon-button icon-button--small" onClick={() => setNewDirectOpen(true)} aria-label="個別チャットを始める"><Icon name="plus" /></button></div>
+        <nav className="room-list direct-list" aria-label="個別チャット一覧">
+          {conversations.map((conversation) => {
+            const otherId = conversation.participantIds.find((id) => id !== user.uid)
+            const other = otherId ? conversation.participantProfiles[otherId] : undefined
+            return <button key={conversation.id} className={`room-item direct-item ${activeKind === 'conversation' && selectedConversationId === conversation.id ? 'room-item--active' : ''}`} onClick={() => { setActiveKind('conversation'); setSelectedConversationId(conversation.id); setSidebarOpen(false) }}><Avatar name={other?.displayName ?? 'メンバー'} photoURL={other?.photoURL ?? null} size="sm" /><span><strong>{other?.displayName ?? 'メンバー'}</strong><small>{conversation.lastMessage || '会話を始めましょう'}</small></span></button>
+          })}
+          {!conversations.length && <button className="empty-direct" onClick={() => setNewDirectOpen(true)}><Icon name="plus" />最初の個別チャットを始める</button>}
+        </nav>
+        <div className="sidebar-label sidebar-label--channels"><span>チャンネル</span><button className="icon-button icon-button--small" onClick={() => setNewRoomOpen(true)} aria-label="チャンネルを追加"><Icon name="plus" /></button></div>
         <nav className="room-list" aria-label="チャンネル一覧">
-          {rooms.map((room) => <button key={room.id} className={`room-item ${selectedRoomId === room.id ? 'room-item--active' : ''}`} onClick={() => { setSelectedRoomId(room.id); setSidebarOpen(false) }}><Icon name="hash" /><span>{room.name}</span></button>)}
+          {rooms.map((room) => <button key={room.id} className={`room-item ${activeKind === 'room' && selectedRoomId === room.id ? 'room-item--active' : ''}`} onClick={() => { setActiveKind('room'); setSelectedRoomId(room.id); setSidebarOpen(false) }}><Icon name="hash" /><span>{room.name}</span></button>)}
         </nav>
         <div className="sidebar-spacer" />
         {profile.role === 'admin' && <a className="admin-link" href={demo ? '?preview=admin#/admin' : '#/admin'}><Icon name="shield" />管理ページ</a>}
         <button className="profile-summary" onClick={() => setProfileOpen(true)}><Avatar name={profile.displayName} photoURL={profile.photoURL} /><span><strong>{profile.displayName}</strong><small>{profile.role === 'admin' ? '管理者' : 'オンライン'}</small></span><Icon name="more" /></button>
       </aside>
       <main className="chat-main">
-        <header className="chat-header"><button className="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="メニュー"><Icon name="menu" /></button><div className="channel-heading"><div><Icon name="hash" /><h1>{selectedRoom?.name ?? 'チャンネル'}</h1></div><p>{selectedRoom?.description ?? ''}</p></div><div className="header-meta"><span className="presence-dot" />Live</div></header>
+        <header className="chat-header"><button className="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="メニュー"><Icon name="menu" /></button><div className="channel-heading"><div>{activeKind === 'conversation' ? <Avatar name={otherProfile?.displayName ?? 'メンバー'} photoURL={otherProfile?.photoURL ?? null} size="sm" /> : <Icon name="hash" />}<h1>{activeKind === 'conversation' ? otherProfile?.displayName ?? '個別チャット' : selectedRoom?.name ?? 'チャンネル'}</h1></div><p>{activeKind === 'conversation' ? '1対1の個別チャット' : selectedRoom?.description ?? ''}</p></div><div className="header-meta"><span className="presence-dot" />Live</div></header>
         <section className="message-area" aria-live="polite">
-          <div className="channel-intro"><span className="channel-icon"><Icon name="hash" /></span><h2>{selectedRoom?.name ?? 'チャンネル'}へようこそ</h2><p>{selectedRoom?.description || 'ここから会話が始まります。'}</p></div>
-          {messages.map((message, index) => {
-            const previous = messages[index - 1]
+          <div className="channel-intro"><span className="channel-icon">{activeKind === 'conversation' ? <Icon name="message" /> : <Icon name="hash" />}</span><h2>{activeKind === 'conversation' ? `${otherProfile?.displayName ?? '相手'}さんとの会話` : `${selectedRoom?.name ?? 'チャンネル'}へようこそ`}</h2><p>{activeKind === 'conversation' ? 'ここでのメッセージは、この会話の参加者だけが読めます。' : selectedRoom?.description || 'ここから会話が始まります。'}</p></div>
+          {hasOlder && <button className="load-older" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? '読み込み中…' : '過去のメッセージを読み込む'}</button>}
+          {allMessages.map((message, index) => {
+            const previous = allMessages[index - 1]
             const grouped = previous?.senderId === message.senderId
             return <article className={`message ${grouped ? 'message--grouped' : ''}`} key={message.id}>{!grouped && <Avatar name={message.senderName} photoURL={message.senderPhotoURL} />}<div className="message-body">{!grouped && <div className="message-meta"><strong>{message.senderName}</strong><time>{formatMessageTime(message.createdAt)}</time></div>}<p className={message.isHidden ? 'message-hidden' : ''}>{message.isHidden ? 'このメッセージは管理者により非表示になりました。' : message.text}</p></div>{!message.isHidden && message.senderId !== user.uid && <button className="message-action" onClick={() => reportMessage(message)} aria-label="報告"><Icon name="flag" /></button>}</article>
           })}
           <div ref={messagesEndRef} />
         </section>
-        <form className="composer" onSubmit={sendMessage}><textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} maxLength={1000} rows={1} placeholder={`#${selectedRoom?.name ?? 'チャンネル'} にメッセージ`} aria-label="メッセージ" /><button className="send-button" disabled={!text.trim() || sending} aria-label="送信"><Icon name="send" /></button><span className="composer-hint">Enterで送信 · Shift + Enterで改行</span></form>
+        <form className="composer" onSubmit={sendMessage}><textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} maxLength={1000} rows={1} placeholder={activeKind === 'conversation' ? `${otherProfile?.displayName ?? '相手'}さんにメッセージ` : `#${selectedRoom?.name ?? 'チャンネル'} にメッセージ`} aria-label="メッセージ" /><button className="send-button" disabled={!text.trim() || sending || !activeId} aria-label="送信"><Icon name="send" /></button><span className="composer-hint">Enterで送信 · Shift + Enterで改行</span></form>
       </main>
       {profileOpen && <ProfileDialog profile={profile} demo={demo} onClose={() => setProfileOpen(false)} />}
+      {newDirectOpen && <NewDirectDialog user={user} profile={profile} demo={demo} onClose={() => setNewDirectOpen(false)} onCreated={(id) => { setSelectedConversationId(id); setActiveKind('conversation'); setNewDirectOpen(false) }} />}
       {newRoomOpen && (demo ? <Modal title="プレビュー" onClose={() => setNewRoomOpen(false)}><p className="preview-copy">Firebase接続後は、ここから新しい公開チャンネルを作成できます。</p></Modal> : <NewRoomDialog user={user as User} onClose={() => setNewRoomOpen(false)} onCreated={(id) => { setSelectedRoomId(id); setNewRoomOpen(false) }} />)}
       {notice && <div className="toast" role="status"><Icon name="check" />{notice}<button onClick={() => setNotice('')} aria-label="閉じる"><Icon name="close" /></button></div>}
     </div>
@@ -415,10 +495,51 @@ function ProfileDialog({ profile, onClose, demo = false }: { profile: UserProfil
     if (!db) return
     setBusy(true)
     await updateDoc(doc(db, 'users', profile.id), { displayName: name.trim(), lastSeenAt: serverTimestamp() })
+    await setDoc(doc(db, 'publicProfiles', profile.id), { displayName: name.trim(), photoURL: profile.photoURL, updatedAt: serverTimestamp() }, { merge: true })
     if (auth?.currentUser) await updateProfile(auth.currentUser, { displayName: name.trim() })
     onClose()
   }
   return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label><button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
+}
+
+function NewDirectDialog({ user, profile, demo, onClose, onCreated }: { user: Pick<User, 'uid'>; profile: UserProfile; demo: boolean; onClose: () => void; onCreated: (id: string) => void }) {
+  const [profiles, setProfiles] = useState<PublicProfile[]>(demo ? demoUsers.filter((item) => item.id !== user.uid).map((item) => ({ id: item.id, displayName: item.displayName, photoURL: item.photoURL })) : [])
+  const [search, setSearch] = useState('')
+  const [busyId, setBusyId] = useState('')
+
+  useEffect(() => {
+    if (demo || !db) return
+    return onSnapshot(query(collection(db, 'publicProfiles'), orderBy('displayName'), limit(50)), (snapshot) => {
+      setProfiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as PublicProfile)).filter((item) => item.id !== user.uid))
+    })
+  }, [demo, user.uid])
+
+  const visibleProfiles = profiles.filter((item) => item.displayName.toLocaleLowerCase('ja').includes(search.trim().toLocaleLowerCase('ja')))
+  const startConversation = async (target: PublicProfile) => {
+    const conversationId = [user.uid, target.id].sort().join('_')
+    if (demo) { onCreated(conversationId); return }
+    if (!db) return
+    setBusyId(target.id)
+    try {
+      const ref = doc(db, 'conversations', conversationId)
+      if (!(await getDoc(ref)).exists()) {
+        await setDoc(ref, {
+          participantIds: [user.uid, target.id].sort(),
+          participantProfiles: {
+            [user.uid]: { displayName: profile.displayName, photoURL: profile.photoURL },
+            [target.id]: { displayName: target.displayName, photoURL: target.photoURL },
+          },
+          lastMessage: '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          lastMessageAt: serverTimestamp(),
+        })
+      }
+      onCreated(conversationId)
+    } finally { setBusyId('') }
+  }
+
+  return <Modal title="個別チャットを始める" onClose={onClose}><div className="member-search"><Icon name="users" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名前で探す" autoFocus /></div><div className="member-picker">{visibleProfiles.map((target) => <button key={target.id} onClick={() => startConversation(target)} disabled={Boolean(busyId)}><Avatar name={target.displayName} photoURL={target.photoURL} /><span><strong>{target.displayName}</strong><small>個別チャットを開く</small></span><Icon name="message" /></button>)}{!visibleProfiles.length && <p>該当するユーザーがいません。</p>}</div></Modal>
 }
 
 function NewRoomDialog({ user, onClose, onCreated }: { user: User; onClose: () => void; onCreated: (id: string) => void }) {
@@ -472,7 +593,7 @@ function AdminPanel({ user, profile, demo = false }: { user: Pick<User, 'uid'>; 
   const resolveReport = async (report: MessageReport, hide: boolean) => {
     if (demo) { setReports((current) => current.filter((item) => item.id !== report.id)); setNotice(hide ? 'プレビュー：メッセージを非表示にしました。' : 'プレビュー：報告を却下しました。'); return }
     if (!db) return
-    if (hide) await updateDoc(doc(db, 'rooms', report.roomId, 'messages', report.messageId), { isHidden: true })
+    if (hide) await updateDoc(doc(db, report.targetType === 'conversation' ? 'conversations' : 'rooms', report.targetId, 'messages', report.messageId), { isHidden: true })
     await updateDoc(doc(db, 'reports', report.id), { status: hide ? 'resolved' : 'dismissed', resolvedAt: serverTimestamp(), resolvedBy: user.uid })
     setNotice(hide ? 'メッセージを非表示にしました。' : '報告を却下しました。')
   }

@@ -25,6 +25,23 @@ export interface Room {
   createdAt?: Timestamp
 }
 
+export interface PublicProfile {
+  id: string
+  displayName: string
+  photoURL: string | null
+  updatedAt?: Timestamp
+}
+
+export interface DirectConversation {
+  id: string
+  participantIds: string[]
+  participantProfiles: Record<string, { displayName: string; photoURL: string | null }>
+  lastMessage: string
+  lastMessageAt?: Timestamp
+  createdAt?: Timestamp
+  updatedAt?: Timestamp
+}
+
 export interface ChatMessage {
   id: string
   text: string
@@ -38,7 +55,8 @@ export interface ChatMessage {
 
 export interface MessageReport {
   id: string
-  roomId: string
+  targetType: 'room' | 'conversation'
+  targetId: string
   messageId: string
   messagePreview: string
   reportedBy: string
