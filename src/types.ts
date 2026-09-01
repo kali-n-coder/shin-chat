@@ -29,6 +29,26 @@ export interface PublicProfile {
   id: string
   displayName: string
   photoURL: string | null
+  friendCode: string
+  updatedAt?: Timestamp
+}
+
+export interface FriendRequest {
+  id: string
+  fromUid: string
+  toUid: string
+  fromProfile: Pick<PublicProfile, 'displayName' | 'photoURL' | 'friendCode'>
+  toProfile: Pick<PublicProfile, 'displayName' | 'photoURL' | 'friendCode'>
+  status: 'pending' | 'accepted' | 'declined'
+  createdAt?: Timestamp
+  respondedAt?: Timestamp
+}
+
+export interface Friendship {
+  id: string
+  memberIds: string[]
+  memberProfiles: Record<string, Pick<PublicProfile, 'displayName' | 'photoURL' | 'friendCode'>>
+  createdAt?: Timestamp
   updatedAt?: Timestamp
 }
 

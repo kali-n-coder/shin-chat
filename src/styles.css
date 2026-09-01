@@ -200,6 +200,33 @@ input::placeholder, textarea::placeholder { color: #aeb2ad; }
 .member-picker small { margin-top: 3px; color: #959b95; font-size: 9px; }
 .member-picker > button > svg { width: 16px; color: var(--sage); }
 .member-picker > p { padding: 30px 0; color: var(--muted); text-align: center; font-size: 11px; }
+.friend-tabs { margin: 20px 0 13px; padding: 4px; border-radius: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; background: var(--soft); }
+.friend-tabs button { height: 34px; border: 0; border-radius: 7px; color: #7d847e; background: transparent; cursor: pointer; font-size: 11px; font-weight: 600; }
+.friend-tabs button.active { color: var(--sage-dark); background: white; box-shadow: 0 2px 8px rgba(51,63,54,.08); }
+.friend-tabs button span { min-width: 17px; height: 17px; margin-left: 3px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; color: white; background: var(--sage); font-size: 8px; }
+.friend-panel, .request-list { min-height: 235px; max-height: 360px; overflow-y: auto; }
+.friend-empty { min-height: 235px; padding: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); text-align: center; }
+.friend-empty > svg { width: 25px; height: 25px; margin-bottom: 13px; color: var(--sage); }
+.friend-empty strong { color: #626a63; font-size: 12px; }
+.friend-empty p { margin: 7px 0 0; font-size: 10px; line-height: 1.6; }
+.friend-code-card { min-height: 62px; padding: 11px 12px; border: 1px solid #dfe5df; border-radius: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 12px; background: #f7f9f6; }
+.friend-code-card > span { color: var(--muted); font-size: 9px; }
+.friend-code-card > strong { grid-column: 1; color: var(--sage-dark); font-size: 12px; letter-spacing: .055em; }
+.friend-code-card > button { grid-column: 2; grid-row: 1 / 3; }
+.friend-add .member-search { margin-top: 13px; }
+.friend-add .member-search button { flex: 0 0 auto; }
+.friend-result { min-height: 65px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; }
+.friend-result > div { min-width: 0; display: flex; flex-direction: column; }
+.friend-result strong { font-size: 12px; }
+.friend-result small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.friend-help { margin: 14px 2px 0; color: #969c96; font-size: 9px; line-height: 1.55; }
+.request-list article { min-height: 67px; padding: 8px 5px; border-bottom: 1px solid #edf0ed; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 10px; }
+.request-list article > div { min-width: 0; display: flex; flex-direction: column; }
+.request-list article strong { font-size: 12px; }
+.request-list article small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.request-list article > span { display: flex; gap: 5px; }
+.small-button--primary { border-color: var(--sage-dark); color: white; background: var(--sage-dark); }
+.dialog-feedback { margin: 12px 2px 0; color: var(--sage-dark); font-size: 10px; line-height: 1.5; }
 
 .toast { position: fixed; z-index: 50; left: 50%; bottom: 24px; transform: translateX(-50%); min-width: 270px; min-height: 47px; padding: 8px 8px 8px 14px; border: 1px solid #d9ded9; border-radius: 11px; display: flex; align-items: center; gap: 9px; color: #455248; background: rgba(255,255,255,.96); box-shadow: 0 12px 35px rgba(37,46,39,.15); font-size: 12px; }
 .toast > svg { width: 16px; color: var(--sage); }

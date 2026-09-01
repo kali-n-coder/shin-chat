@@ -56,30 +56,101 @@ service cloud.firestore {
       allow read: if isActive();
       allow create: if isActive()
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(["displayName", "photoURL", "updatedAt"])
+        && request.resource.data.keys().hasOnly(["displayName", "photoURL", "friendCode", "updatedAt"])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() >= 1
         && request.resource.data.displayName.size() <= 30
-        && (request.resource.data.photoURL == null || request.resource.data.photoURL is string);
+        && (request.resource.data.photoURL == null || request.resource.data.photoURL is string)
+        && request.resource.data.friendCode is string
+        && request.resource.data.friendCode.matches('^NG-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}$')
+        && existsAfter(/databases/$(database)/documents/friendCodes/$(request.resource.data.friendCode))
+        && getAfter(/databases/$(database)/documents/friendCodes/$(request.resource.data.friendCode)).data.uid == userId;
       allow update: if isActive()
         && request.auth.uid == userId
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() >= 1
         && request.resource.data.displayName.size() <= 30
         && (request.resource.data.photoURL == null || request.resource.data.photoURL is string)
+        && request.resource.data.friendCode is string
+        && request.resource.data.friendCode.matches('^NG-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}$')
+        && existsAfter(/databases/$(database)/documents/friendCodes/$(request.resource.data.friendCode))
+        && getAfter(/databases/$(database)/documents/friendCodes/$(request.resource.data.friendCode)).data.uid == userId
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["displayName", "photoURL", "updatedAt"]);
+          .hasOnly(["displayName", "photoURL", "friendCode", "updatedAt"]);
       allow delete: if false;
     }
 
+    match /friendCodes/{friendCode} {
+      allow read: if isActive();
+      allow create: if isActive()
+        && request.resource.data.keys().hasOnly(["uid", "createdAt"])
+        && request.resource.data.uid == request.auth.uid
+        && friendCode.matches('^NG-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}-[A-Z0-9_-]{4}$');
+      allow update, delete: if false;
+    }
+
+    match /friendRequests/{requestId} {
+      allow read: if isActive()
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+      allow create: if isActive()
+        && request.resource.data.keys().hasOnly(["fromUid", "toUid", "fromProfile", "toProfile", "status", "createdAt"])
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != request.auth.uid
+        && requestId == request.auth.uid + "_" + request.resource.data.toUid
+        && request.resource.data.status == "pending"
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.toUid))
+        && get(/databases/$(database)/documents/users/$(request.resource.data.toUid)).data.status == "active"
+        && request.resource.data.fromProfile.displayName == get(/databases/$(database)/documents/publicProfiles/$(request.auth.uid)).data.displayName
+        && request.resource.data.fromProfile.photoURL == get(/databases/$(database)/documents/publicProfiles/$(request.auth.uid)).data.photoURL
+        && request.resource.data.fromProfile.friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.auth.uid)).data.friendCode
+        && request.resource.data.toProfile.displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.toUid)).data.displayName
+        && request.resource.data.toProfile.photoURL == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.toUid)).data.photoURL
+        && request.resource.data.toProfile.friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.toUid)).data.friendCode;
+      allow update: if isActive()
+        && request.auth.uid == resource.data.toUid
+        && resource.data.status == "pending"
+        && (request.resource.data.status == "accepted" || request.resource.data.status == "declined")
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "respondedAt"]);
+      allow delete: if false;
+    }
+
+    match /friendships/{friendshipId} {
+      allow read: if isActive() && request.auth.uid in resource.data.memberIds;
+      allow create: if isActive()
+        && request.resource.data.keys().hasOnly(["memberIds", "memberProfiles", "createdAt", "updatedAt"])
+        && request.resource.data.memberIds is list
+        && request.resource.data.memberIds.size() == 2
+        && request.resource.data.memberIds[0] != request.resource.data.memberIds[1]
+        && request.auth.uid in request.resource.data.memberIds
+        && friendshipId == request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1]
+        && request.resource.data.memberProfiles is map
+        && request.resource.data.memberProfiles.keys().hasAll(request.resource.data.memberIds)
+        && request.resource.data.memberProfiles[request.resource.data.memberIds[0]].displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[0])).data.displayName
+        && request.resource.data.memberProfiles[request.resource.data.memberIds[0]].friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[0])).data.friendCode
+        && request.resource.data.memberProfiles[request.resource.data.memberIds[1]].displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[1])).data.displayName
+        && request.resource.data.memberProfiles[request.resource.data.memberIds[1]].friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[1])).data.friendCode
+        && ((exists(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1]))
+            && get(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1])).data.status == "pending"
+            && get(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1])).data.toUid == request.auth.uid)
+          || (exists(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[1] + "_" + request.resource.data.memberIds[0]))
+            && get(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[1] + "_" + request.resource.data.memberIds[0])).data.status == "pending"
+            && get(/databases/$(database)/documents/friendRequests/$(request.resource.data.memberIds[1] + "_" + request.resource.data.memberIds[0])).data.toUid == request.auth.uid));
+      allow update, delete: if false;
+    }
+
     match /conversations/{conversationId} {
-      allow read: if isActive() && request.auth.uid in resource.data.participantIds;
+      allow read: if isActive()
+        && exists(/databases/$(database)/documents/friendships/$(conversationId))
+        && request.auth.uid in resource.data.participantIds;
       allow create: if isActive()
         && request.resource.data.keys().hasOnly(["participantIds", "participantProfiles", "lastMessage", "createdAt", "updatedAt", "lastMessageAt"])
         && request.resource.data.participantIds is list
         && request.resource.data.participantIds.size() == 2
         && request.auth.uid in request.resource.data.participantIds
         && request.resource.data.participantIds[0] != request.resource.data.participantIds[1]
+        && exists(/databases/$(database)/documents/friendships/$(conversationId))
+        && request.resource.data.participantIds == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberIds
         && request.resource.data.participantProfiles is map
         && request.resource.data.participantProfiles.keys().hasAll(request.resource.data.participantIds)
         && request.resource.data.participantProfiles[request.resource.data.participantIds[0]].displayName
@@ -88,6 +159,7 @@ service cloud.firestore {
           == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.participantIds[1])).data.displayName
         && request.resource.data.lastMessage == "";
       allow update: if isActive()
+        && exists(/databases/$(database)/documents/friendships/$(conversationId))
         && request.auth.uid in resource.data.participantIds
         && request.resource.data.participantIds == resource.data.participantIds
         && request.resource.data.participantProfiles == resource.data.participantProfiles
@@ -99,8 +171,10 @@ service cloud.firestore {
 
       match /messages/{messageId} {
         allow read: if isActive()
+          && exists(/databases/$(database)/documents/friendships/$(conversationId))
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow create: if isActive()
+          && exists(/databases/$(database)/documents/friendships/$(conversationId))
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds
           && request.resource.data.senderId == request.auth.uid
           && request.resource.data.senderName is string
@@ -113,6 +187,7 @@ service cloud.firestore {
         allow update: if (isAdmin()
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["isHidden"]))
           || (isActive()
+            && exists(/databases/$(database)/documents/friendships/$(conversationId))
             && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds
             && resource.data.senderId == request.auth.uid
             && resource.data.isHidden == false

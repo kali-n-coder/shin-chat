@@ -26,12 +26,13 @@ import {
   Timestamp,
   updateDoc,
   where,
+  writeBatch,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
 import { auth, db, isFirebaseConfigured } from './lib/firebase'
 import { formatDateTime, formatMessageTime, friendlyAuthError, initials } from './lib/format'
-import type { ChatMessage, DirectConversation, MessageReport, PublicProfile, Room, UserProfile, UserRole, UserStatus } from './types'
+import type { ChatMessage, DirectConversation, FriendRequest, Friendship, MessageReport, PublicProfile, Room, UserProfile, UserRole, UserStatus } from './types'
 import { Icon } from './components/Icon'
 
 type Route = 'chat' | 'admin'
@@ -59,12 +60,40 @@ const demoUsers: UserProfile[] = [
   { id: 'member-2', displayName: '佐倉 凛', email: 'rin@example.com', photoURL: null, role: 'member', status: 'active' },
   { id: 'member-3', displayName: '山本 海', email: 'umi@example.com', photoURL: null, role: 'member', status: 'suspended' },
 ]
+const demoPublicProfiles: PublicProfile[] = [
+  { id: 'demo-user', displayName: 'なぎ 太郎', photoURL: null, friendCode: 'NG-DEMO-TARO-01' },
+  { id: 'member-1', displayName: '水野 あおい', photoURL: null, friendCode: 'NG-AOI0-0000-01' },
+  { id: 'member-2', displayName: '佐倉 凛', photoURL: null, friendCode: 'NG-RIN0-0000-02' },
+  { id: 'member-3', displayName: '山本 海', photoURL: null, friendCode: 'NG-UMI0-0000-03' },
+]
+const demoFriendships: Friendship[] = demoPublicProfiles.slice(1, 3).map((target) => ({
+  id: ['demo-user', target.id].sort().join('_'),
+  memberIds: ['demo-user', target.id].sort(),
+  memberProfiles: {
+    'demo-user': { displayName: demoPublicProfiles[0].displayName, photoURL: null, friendCode: demoPublicProfiles[0].friendCode },
+    [target.id]: { displayName: target.displayName, photoURL: target.photoURL, friendCode: target.friendCode },
+  },
+}))
+const demoFriendRequests: FriendRequest[] = [{
+  id: 'member-3_demo-user', fromUid: 'member-3', toUid: 'demo-user', status: 'pending',
+  fromProfile: { displayName: '山本 海', photoURL: null, friendCode: 'NG-UMI0-0000-03' },
+  toProfile: { displayName: 'なぎ 太郎', photoURL: null, friendCode: 'NG-DEMO-TARO-01' },
+}]
 const demoReports: MessageReport[] = [
   { id: 'demo-report', targetType: 'conversation', targetId: 'demo-user_member-2', messageId: 'reported-message', messagePreview: 'この文章は管理者による確認待ちのサンプルです。', reportedBy: 'member-2', reason: '不適切な内容', status: 'pending', createdAt: Timestamp.fromDate(new Date(Date.now() - 25 * 60_000)) },
 ]
 
 function currentRoute(): Route {
   return window.location.hash === '#/admin' ? 'admin' : 'chat'
+}
+
+function friendCodeForUid(uid: string): string {
+  const body = uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12).toUpperCase().padEnd(12, '0')
+  return `NG-${body.slice(0, 4)}-${body.slice(4, 8)}-${body.slice(8, 12)}`
+}
+
+function pairId(firstUid: string, secondUid: string): string {
+  return [firstUid, secondUid].sort().join('_')
 }
 
 async function ensureUserProfile(user: User): Promise<void> {
@@ -91,11 +120,24 @@ async function ensureUserProfile(user: User): Promise<void> {
     })
   }
 
-  await setDoc(doc(db, 'publicProfiles', user.uid), {
+  const friendCode = friendCodeForUid(user.uid)
+  const friendCodeRef = doc(db, 'friendCodes', friendCode)
+  const publicProfileRef = doc(db, 'publicProfiles', user.uid)
+  const publicProfile = {
     displayName: user.displayName?.trim() || user.email?.split('@')[0] || 'メンバー',
     photoURL: user.photoURL ?? null,
+    friendCode,
     updatedAt: serverTimestamp(),
-  }, { merge: true })
+  }
+  const friendCodeSnapshot = await getDoc(friendCodeRef)
+  if (!friendCodeSnapshot.exists()) {
+    const batch = writeBatch(db)
+    batch.set(friendCodeRef, { uid: user.uid, createdAt: serverTimestamp() })
+    batch.set(publicProfileRef, publicProfile, { merge: true })
+    await batch.commit()
+  } else {
+    await setDoc(publicProfileRef, publicProfile, { merge: true })
+  }
 
   const generalRef = doc(db, 'rooms', 'general')
   if (!(await getDoc(generalRef)).exists()) {
@@ -116,6 +158,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [route, setRoute] = useState<Route>(currentRoute)
   const [startupError, setStartupError] = useState('')
+  const preview = new URLSearchParams(window.location.search).get('preview')
 
   useEffect(() => {
     const onHashChange = () => setRoute(currentRoute())
@@ -165,8 +208,9 @@ export default function App() {
     }
   }, [])
 
+  if (import.meta.env.DEV && preview === 'chat') return <ChatShell user={{ uid: 'demo-user' }} profile={demoProfile} demo />
+  if (import.meta.env.DEV && preview === 'admin') return <AdminPanel user={{ uid: 'demo-user' }} profile={demoProfile} demo />
   if (!isFirebaseConfigured) {
-    const preview = new URLSearchParams(window.location.search).get('preview')
     if (preview === 'chat') return <ChatShell user={{ uid: 'demo-user' }} profile={demoProfile} demo />
     if (preview === 'admin') return <AdminPanel user={{ uid: 'demo-user' }} profile={demoProfile} demo />
     return <SetupScreen />
@@ -299,7 +343,8 @@ function Avatar({ name, photoURL, size = 'md' }: { name: string; photoURL: strin
 
 function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; profile: UserProfile; demo?: boolean }) {
   const [rooms, setRooms] = useState<Room[]>(demo ? demoRooms : [])
-  const [conversations, setConversations] = useState<DirectConversation[]>(demo ? demoConversations : [])
+  const [allConversations, setAllConversations] = useState<DirectConversation[]>(demo ? demoConversations : [])
+  const [friendshipIds, setFriendshipIds] = useState<string[]>(demo ? demoFriendships.map((item) => item.id) : [])
   const [activeKind, setActiveKind] = useState<'conversation' | 'room'>(demo ? 'conversation' : 'room')
   const [selectedConversationId, setSelectedConversationId] = useState(demo ? demoConversations[0].id : '')
   const [selectedRoomId, setSelectedRoomId] = useState('general')
@@ -311,12 +356,13 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
   const [text, setText] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
-  const [newDirectOpen, setNewDirectOpen] = useState(false)
+  const [newDirectOpen, setNewDirectOpen] = useState(demo && new URLSearchParams(window.location.search).get('friends') === '1')
   const [newRoomOpen, setNewRoomOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  const conversations = useMemo(() => allConversations.filter((item) => friendshipIds.includes(item.id)), [allConversations, friendshipIds])
   const selectedRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId), [rooms, selectedRoomId])
   const selectedConversation = useMemo(() => conversations.find((item) => item.id === selectedConversationId), [conversations, selectedConversationId])
   const otherParticipant = selectedConversation?.participantIds.find((id) => id !== user.uid)
@@ -326,21 +372,32 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
 
   useEffect(() => {
     if (demo || !db) return
-    const conversationsQuery = query(
-      collection(db, 'conversations'),
-      where('participantIds', 'array-contains', user.uid),
-      orderBy('updatedAt', 'desc'),
-      limit(30),
-    )
-    return onSnapshot(conversationsQuery, (snapshot) => {
-      const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as DirectConversation))
-      setConversations(next)
-      if (!selectedConversationId && next.length) {
-        setSelectedConversationId(next[0].id)
-        setActiveKind('conversation')
-      }
-    }, () => setNotice('個別チャットを読み込めませんでした。'))
-  }, [demo, selectedConversationId, user.uid])
+    return onSnapshot(query(collection(db, 'friendships'), where('memberIds', 'array-contains', user.uid), limit(100)), (snapshot) => {
+      setFriendshipIds(snapshot.docs.map((item) => item.id))
+    }, () => setNotice('友達一覧を読み込めませんでした。'))
+  }, [demo, user.uid])
+
+  useEffect(() => {
+    if (demo || !db) return
+    const conversationsById = new Map<string, DirectConversation>()
+    setAllConversations([])
+    const syncConversations = () => {
+      setAllConversations([...conversationsById.values()].sort((a, b) => (b.updatedAt?.toMillis() ?? 0) - (a.updatedAt?.toMillis() ?? 0)))
+    }
+    const stops = friendshipIds.map((friendshipId) => onSnapshot(doc(db!, 'conversations', friendshipId), (snapshot) => {
+      if (snapshot.exists()) conversationsById.set(snapshot.id, { id: snapshot.id, ...snapshot.data() } as DirectConversation)
+      else conversationsById.delete(snapshot.id)
+      syncConversations()
+    }, () => setNotice('個別チャットを読み込めませんでした。')))
+    return () => stops.forEach((stop) => stop())
+  }, [demo, friendshipIds])
+
+  useEffect(() => {
+    if (!selectedConversationId && conversations.length) {
+      setSelectedConversationId(conversations[0].id)
+      setActiveKind('conversation')
+    }
+  }, [conversations, selectedConversationId])
 
   useEffect(() => {
     if (demo) return
@@ -441,14 +498,14 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="メニューを閉じる" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
         <div className="sidebar-top"><Brand compact /><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="閉じる"><Icon name="close" /></button></div>
-        <div className="sidebar-label"><span>メッセージ</span><button className="icon-button icon-button--small" onClick={() => setNewDirectOpen(true)} aria-label="個別チャットを始める"><Icon name="plus" /></button></div>
+        <div className="sidebar-label"><span>メッセージ</span><button className="icon-button icon-button--small" onClick={() => setNewDirectOpen(true)} aria-label="友達を開く"><Icon name="users" /></button></div>
         <nav className="room-list direct-list" aria-label="個別チャット一覧">
           {conversations.map((conversation) => {
             const otherId = conversation.participantIds.find((id) => id !== user.uid)
             const other = otherId ? conversation.participantProfiles[otherId] : undefined
             return <button key={conversation.id} className={`room-item direct-item ${activeKind === 'conversation' && selectedConversationId === conversation.id ? 'room-item--active' : ''}`} onClick={() => { setActiveKind('conversation'); setSelectedConversationId(conversation.id); setSidebarOpen(false) }}><Avatar name={other?.displayName ?? 'メンバー'} photoURL={other?.photoURL ?? null} size="sm" /><span><strong>{other?.displayName ?? 'メンバー'}</strong><small>{conversation.lastMessage || '会話を始めましょう'}</small></span></button>
           })}
-          {!conversations.length && <button className="empty-direct" onClick={() => setNewDirectOpen(true)}><Icon name="plus" />最初の個別チャットを始める</button>}
+          {!conversations.length && <button className="empty-direct" onClick={() => setNewDirectOpen(true)}><Icon name="users" />友達を追加して話す</button>}
         </nav>
         <div className="sidebar-label sidebar-label--channels"><span>チャンネル</span><button className="icon-button icon-button--small" onClick={() => setNewRoomOpen(true)} aria-label="チャンネルを追加"><Icon name="plus" /></button></div>
         <nav className="room-list" aria-label="チャンネル一覧">
@@ -473,7 +530,7 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
         <form className="composer" onSubmit={sendMessage}><textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} maxLength={1000} rows={1} placeholder={activeKind === 'conversation' ? `${otherProfile?.displayName ?? '相手'}さんにメッセージ` : `#${selectedRoom?.name ?? 'チャンネル'} にメッセージ`} aria-label="メッセージ" /><button className="send-button" disabled={!text.trim() || sending || !activeId} aria-label="送信"><Icon name="send" /></button><span className="composer-hint">Enterで送信 · Shift + Enterで改行</span></form>
       </main>
       {profileOpen && <ProfileDialog profile={profile} demo={demo} onClose={() => setProfileOpen(false)} />}
-      {newDirectOpen && <NewDirectDialog user={user} profile={profile} demo={demo} onClose={() => setNewDirectOpen(false)} onCreated={(id) => { setSelectedConversationId(id); setActiveKind('conversation'); setNewDirectOpen(false) }} />}
+      {newDirectOpen && <FriendsDialog user={user} profile={profile} demo={demo} onClose={() => setNewDirectOpen(false)} onCreated={(id) => { setSelectedConversationId(id); setActiveKind('conversation'); setNewDirectOpen(false) }} />}
       {newRoomOpen && (demo ? <Modal title="プレビュー" onClose={() => setNewRoomOpen(false)}><p className="preview-copy">Firebase接続後は、ここから新しい公開チャンネルを作成できます。</p></Modal> : <NewRoomDialog user={user as User} onClose={() => setNewRoomOpen(false)} onCreated={(id) => { setSelectedRoomId(id); setNewRoomOpen(false) }} />)}
       {notice && <div className="toast" role="status"><Icon name="check" />{notice}<button onClick={() => setNotice('')} aria-label="閉じる"><Icon name="close" /></button></div>}
     </div>
@@ -498,27 +555,48 @@ function ProfileDialog({ profile, onClose, demo = false }: { profile: UserProfil
     if (auth?.currentUser) await updateProfile(auth.currentUser, { displayName: name.trim() })
     onClose()
   }
-  return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label><button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
+  const friendCode = friendCodeForUid(profile.id)
+  return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><div className="friend-code-card"><span>あなたのNagi ID</span><strong>{friendCode}</strong><button type="button" className="small-button" onClick={() => navigator.clipboard.writeText(friendCode)}>コピー</button></div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label><button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
 }
 
-function NewDirectDialog({ user, profile, demo, onClose, onCreated }: { user: Pick<User, 'uid'>; profile: UserProfile; demo: boolean; onClose: () => void; onCreated: (id: string) => void }) {
-  const [profiles, setProfiles] = useState<PublicProfile[]>(demo ? demoUsers.filter((item) => item.id !== user.uid).map((item) => ({ id: item.id, displayName: item.displayName, photoURL: item.photoURL })) : [])
+function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick<User, 'uid'>; profile: UserProfile; demo: boolean; onClose: () => void; onCreated: (id: string) => void }) {
+  const previewTab = new URLSearchParams(window.location.search).get('friendsTab')
+  const [tab, setTab] = useState<'friends' | 'requests' | 'add'>(demo && (previewTab === 'requests' || previewTab === 'add') ? previewTab : 'friends')
+  const [friendships, setFriendships] = useState<Friendship[]>(demo ? demoFriendships : [])
+  const [incoming, setIncoming] = useState<FriendRequest[]>(demo ? demoFriendRequests : [])
+  const [outgoing, setOutgoing] = useState<FriendRequest[]>([])
   const [search, setSearch] = useState('')
+  const [result, setResult] = useState<PublicProfile | null>(null)
+  const [feedback, setFeedback] = useState('')
   const [busyId, setBusyId] = useState('')
+  const ownCode = friendCodeForUid(user.uid)
 
   useEffect(() => {
     if (demo || !db) return
-    return onSnapshot(query(collection(db, 'publicProfiles'), orderBy('displayName'), limit(50)), (snapshot) => {
-      setProfiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as PublicProfile)).filter((item) => item.id !== user.uid))
+    const stopFriends = onSnapshot(query(collection(db, 'friendships'), where('memberIds', 'array-contains', user.uid), limit(100)), (snapshot) => {
+      setFriendships(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Friendship)))
     })
+    const stopIncoming = onSnapshot(query(collection(db, 'friendRequests'), where('toUid', '==', user.uid), where('status', '==', 'pending'), limit(50)), (snapshot) => {
+      setIncoming(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as FriendRequest)))
+    })
+    const stopOutgoing = onSnapshot(query(collection(db, 'friendRequests'), where('fromUid', '==', user.uid), where('status', '==', 'pending'), limit(50)), (snapshot) => {
+      setOutgoing(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as FriendRequest)))
+    })
+    return () => { stopFriends(); stopIncoming(); stopOutgoing() }
   }, [demo, user.uid])
 
-  const visibleProfiles = profiles.filter((item) => item.displayName.toLocaleLowerCase('ja').includes(search.trim().toLocaleLowerCase('ja')))
-  const startConversation = async (target: PublicProfile) => {
-    const conversationId = [user.uid, target.id].sort().join('_')
+  const otherFriend = (friendship: Friendship) => {
+    const id = friendship.memberIds.find((memberId) => memberId !== user.uid) ?? ''
+    return { id, ...friendship.memberProfiles[id] }
+  }
+
+  const startConversation = async (friendship: Friendship) => {
+    const target = otherFriend(friendship)
+    const conversationId = pairId(user.uid, target.id)
     if (demo) { onCreated(conversationId); return }
     if (!db) return
     setBusyId(target.id)
+    setFeedback('')
     try {
       const ref = doc(db, 'conversations', conversationId)
       if (!(await getDoc(ref)).exists()) {
@@ -528,17 +606,94 @@ function NewDirectDialog({ user, profile, demo, onClose, onCreated }: { user: Pi
             [user.uid]: { displayName: profile.displayName, photoURL: profile.photoURL },
             [target.id]: { displayName: target.displayName, photoURL: target.photoURL },
           },
-          lastMessage: '',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          lastMessageAt: serverTimestamp(),
+          lastMessage: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastMessageAt: serverTimestamp(),
         })
       }
       onCreated(conversationId)
-    } finally { setBusyId('') }
+    } catch (error) { setFeedback(friendlyAuthError(error)) } finally { setBusyId('') }
   }
 
-  return <Modal title="個別チャットを始める" onClose={onClose}><div className="member-search"><Icon name="users" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名前で探す" autoFocus /></div><div className="member-picker">{visibleProfiles.map((target) => <button key={target.id} onClick={() => startConversation(target)} disabled={Boolean(busyId)}><Avatar name={target.displayName} photoURL={target.photoURL} /><span><strong>{target.displayName}</strong><small>個別チャットを開く</small></span><Icon name="message" /></button>)}{!visibleProfiles.length && <p>該当するユーザーがいません。</p>}</div></Modal>
+  const findFriend = async (event: FormEvent) => {
+    event.preventDefault()
+    const code = search.trim().toUpperCase()
+    setResult(null)
+    setFeedback('')
+    if (!code) return
+    if (code === ownCode) { setFeedback('自分自身は追加できません。'); return }
+    if (demo) {
+      const found = demoPublicProfiles.find((item) => item.friendCode === code) ?? null
+      setResult(found)
+      if (!found) setFeedback('このNagi IDのユーザーは見つかりませんでした。')
+      return
+    }
+    if (!db) return
+    setBusyId('search')
+    try {
+      const codeSnapshot = await getDoc(doc(db, 'friendCodes', code))
+      if (!codeSnapshot.exists()) { setFeedback('このNagi IDのユーザーは見つかりませんでした。'); return }
+      const targetUid = codeSnapshot.data().uid as string
+      const profileSnapshot = await getDoc(doc(db, 'publicProfiles', targetUid))
+      if (!profileSnapshot.exists()) { setFeedback('このユーザーは現在利用できません。'); return }
+      setResult({ id: profileSnapshot.id, ...profileSnapshot.data() } as PublicProfile)
+    } catch (error) { setFeedback(friendlyAuthError(error)) } finally { setBusyId('') }
+  }
+
+  const sendRequest = async (target: PublicProfile) => {
+    if (demo) { setFeedback('プレビュー：友達申請を送りました。'); return }
+    if (!db) return
+    setBusyId(target.id)
+    setFeedback('')
+    try {
+      await setDoc(doc(db, 'friendRequests', `${user.uid}_${target.id}`), {
+        fromUid: user.uid, toUid: target.id, status: 'pending',
+        fromProfile: { displayName: profile.displayName, photoURL: profile.photoURL, friendCode: ownCode },
+        toProfile: { displayName: target.displayName, photoURL: target.photoURL, friendCode: target.friendCode },
+        createdAt: serverTimestamp(),
+      })
+      setFeedback('友達申請を送りました。')
+    } catch (error) { setFeedback(friendlyAuthError(error)) } finally { setBusyId('') }
+  }
+
+  const respondToRequest = async (request: FriendRequest, accept: boolean) => {
+    if (demo) {
+      setIncoming((current) => current.filter((item) => item.id !== request.id))
+      if (accept) {
+        const id = pairId(request.fromUid, request.toUid)
+        setFriendships((current) => [...current, { id, memberIds: [request.fromUid, request.toUid].sort(), memberProfiles: { [request.fromUid]: request.fromProfile, [request.toUid]: request.toProfile } }])
+      }
+      return
+    }
+    if (!db) return
+    setBusyId(request.id)
+    setFeedback('')
+    try {
+      if (accept) {
+        const friendshipId = pairId(request.fromUid, request.toUid)
+        const batch = writeBatch(db)
+        batch.set(doc(db, 'friendships', friendshipId), {
+          memberIds: [request.fromUid, request.toUid].sort(),
+          memberProfiles: { [request.fromUid]: request.fromProfile, [request.toUid]: request.toProfile },
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        })
+        batch.update(doc(db, 'friendRequests', request.id), { status: 'accepted', respondedAt: serverTimestamp() })
+        await batch.commit()
+        setFeedback('友達に追加しました。')
+      } else {
+        await updateDoc(doc(db, 'friendRequests', request.id), { status: 'declined', respondedAt: serverTimestamp() })
+      }
+    } catch (error) { setFeedback(friendlyAuthError(error)) } finally { setBusyId('') }
+  }
+
+  const requestState = result ? (friendships.some((item) => item.memberIds.includes(result.id)) ? 'friend' : incoming.find((item) => item.fromUid === result.id) ? 'incoming' : outgoing.some((item) => item.toUid === result.id) ? 'outgoing' : 'none') : 'none'
+  const incomingRequest = result ? incoming.find((item) => item.fromUid === result.id) : undefined
+
+  return <Modal title="友達" onClose={onClose}>
+    <div className="friend-tabs"><button className={tab === 'friends' ? 'active' : ''} onClick={() => setTab('friends')}>友達 <span>{friendships.length}</span></button><button className={tab === 'requests' ? 'active' : ''} onClick={() => setTab('requests')}>申請 {incoming.length > 0 && <span>{incoming.length}</span>}</button><button className={tab === 'add' ? 'active' : ''} onClick={() => setTab('add')}>追加</button></div>
+    {tab === 'friends' && <div className="member-picker friend-panel">{friendships.map((friendship) => { const target = otherFriend(friendship); return <button key={friendship.id} onClick={() => startConversation(friendship)} disabled={Boolean(busyId)}><Avatar name={target.displayName} photoURL={target.photoURL} /><span><strong>{target.displayName}</strong><small>友達 · トークを開く</small></span><Icon name="message" /></button> })}{!friendships.length && <div className="friend-empty"><Icon name="users" /><strong>まだ友達がいません</strong><p>「追加」からNagi IDを検索して申請できます。</p></div>}</div>}
+    {tab === 'requests' && <div className="request-list">{incoming.map((request) => <article key={request.id}><Avatar name={request.fromProfile.displayName} photoURL={request.fromProfile.photoURL} /><div><strong>{request.fromProfile.displayName}</strong><small>{request.fromProfile.friendCode}</small></div><span><button className="small-button" onClick={() => respondToRequest(request, false)} disabled={Boolean(busyId)}>拒否</button><button className="small-button small-button--primary" onClick={() => respondToRequest(request, true)} disabled={Boolean(busyId)}>追加</button></span></article>)}{!incoming.length && <div className="friend-empty"><Icon name="check" /><strong>新しい申請はありません</strong><p>届いた申請だけがここに表示されます。</p></div>}</div>}
+    {tab === 'add' && <div className="friend-add"><div className="friend-code-card"><span>あなたのNagi ID</span><strong>{ownCode}</strong><button type="button" className="small-button" onClick={() => navigator.clipboard.writeText(ownCode)}>コピー</button></div><form className="member-search" onSubmit={findFriend}><Icon name="users" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="NG-XXXX-XXXX-XXXX" autoFocus /><button type="submit" className="small-button" disabled={busyId === 'search'}>検索</button></form>{result && <div className="friend-result"><Avatar name={result.displayName} photoURL={result.photoURL} /><div><strong>{result.displayName}</strong><small>{result.friendCode}</small></div>{requestState === 'friend' ? <span className="status-badge status-badge--active">友達</span> : requestState === 'outgoing' ? <span className="status-badge status-badge--pending">申請中</span> : requestState === 'incoming' && incomingRequest ? <button className="small-button small-button--primary" onClick={() => respondToRequest(incomingRequest, true)}>承認</button> : <button className="small-button small-button--primary" onClick={() => sendRequest(result)} disabled={Boolean(busyId)}>友達申請</button>}</div>}<p className="friend-help">相手のNagi IDを正確に入力してください。名前から利用者を一覧検索することはできません。</p></div>}
+    {feedback && <p className="dialog-feedback" role="status">{feedback}</p>}
+  </Modal>
 }
 
 function NewRoomDialog({ user, onClose, onCreated }: { user: User; onClose: () => void; onCreated: (id: string) => void }) {
