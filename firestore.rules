@@ -31,18 +31,14 @@ service cloud.firestore {
         && !exists(/databases/$(database)/documents/blocks/$(secondUid + "_" + firstUid));
     }
 
-    function friendshipExistsAfter(firstUid, secondUid) {
-      return existsAfter(/databases/$(database)/documents/friendships/$(firstUid + "_" + secondUid))
-        || existsAfter(/databases/$(database)/documents/friendships/$(secondUid + "_" + firstUid));
-    }
-
-    function acceptsPendingRequest(requestId, fromUid, toUid) {
+    function approvesPendingRequest(requestId, fromUid, toUid, memberProfiles) {
       return exists(/databases/$(database)/documents/friendRequests/$(requestId))
         && get(/databases/$(database)/documents/friendRequests/$(requestId)).data.status == "pending"
         && get(/databases/$(database)/documents/friendRequests/$(requestId)).data.fromUid == fromUid
         && get(/databases/$(database)/documents/friendRequests/$(requestId)).data.toUid == toUid
         && request.auth.uid == toUid
-        && getAfter(/databases/$(database)/documents/friendRequests/$(requestId)).data.status == "accepted";
+        && memberProfiles[fromUid] == get(/databases/$(database)/documents/friendRequests/$(requestId)).data.fromProfile
+        && memberProfiles[toUid] == get(/databases/$(database)/documents/friendRequests/$(requestId)).data.toProfile;
     }
 
     function validBaseProfile(data) {
@@ -147,9 +143,7 @@ service cloud.firestore {
       allow update: if isActive()
         && ((request.auth.uid == resource.data.toUid
             && resource.data.status == "pending"
-            && ((request.resource.data.status == "accepted"
-                && friendshipExistsAfter(resource.data.fromUid, resource.data.toUid))
-              || request.resource.data.status == "declined")
+            && (request.resource.data.status == "accepted" || request.resource.data.status == "declined")
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "respondedAt"]))
           || (request.auth.uid == resource.data.fromUid
             && request.resource.data.keys().hasOnly(["fromUid", "toUid", "fromProfile", "toProfile", "status", "createdAt"])
@@ -181,18 +175,16 @@ service cloud.firestore {
         && friendshipId == request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1]
         && request.resource.data.memberProfiles is map
         && request.resource.data.memberProfiles.keys().hasAll(request.resource.data.memberIds)
-        && request.resource.data.memberProfiles[request.resource.data.memberIds[0]].displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[0])).data.displayName
-        && request.resource.data.memberProfiles[request.resource.data.memberIds[0]].friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[0])).data.friendCode
-        && request.resource.data.memberProfiles[request.resource.data.memberIds[1]].displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[1])).data.displayName
-        && request.resource.data.memberProfiles[request.resource.data.memberIds[1]].friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.memberIds[1])).data.friendCode
-        && (acceptsPendingRequest(
+        && (approvesPendingRequest(
               request.resource.data.memberIds[0] + "_" + request.resource.data.memberIds[1],
               request.resource.data.memberIds[0],
-              request.resource.data.memberIds[1])
-          || acceptsPendingRequest(
+              request.resource.data.memberIds[1],
+              request.resource.data.memberProfiles)
+          || approvesPendingRequest(
               request.resource.data.memberIds[1] + "_" + request.resource.data.memberIds[0],
               request.resource.data.memberIds[1],
-              request.resource.data.memberIds[0]));
+              request.resource.data.memberIds[0],
+              request.resource.data.memberProfiles));
       allow delete: if isActive() && request.auth.uid in resource.data.memberIds;
       allow update: if false;
     }
