@@ -708,16 +708,16 @@ function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick
     if (demo || !db) return
     const stopFriends = onSnapshot(query(collection(db, 'friendships'), where('memberIds', 'array-contains', user.uid), limit(100)), (snapshot) => {
       setFriendships(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Friendship)))
-    })
+    }, () => setFeedback('友達一覧を読み込めませんでした。'))
     const stopIncoming = onSnapshot(query(collection(db, 'friendRequests'), where('toUid', '==', user.uid), where('status', '==', 'pending'), limit(50)), (snapshot) => {
       setIncoming(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as FriendRequest)))
-    })
+    }, () => setFeedback('届いた申請を読み込めませんでした。'))
     const stopOutgoing = onSnapshot(query(collection(db, 'friendRequests'), where('fromUid', '==', user.uid), where('status', '==', 'pending'), limit(50)), (snapshot) => {
       setOutgoing(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as FriendRequest)))
-    })
+    }, () => setFeedback('送った申請を読み込めませんでした。'))
     const stopBlocks = onSnapshot(query(collection(db, 'blocks'), where('blockerUid', '==', user.uid), limit(100)), (snapshot) => {
       setBlocks(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as BlockRecord)))
-    })
+    }, () => setFeedback('ブロック一覧を読み込めませんでした。'))
     return () => { stopFriends(); stopIncoming(); stopOutgoing(); stopBlocks() }
   }, [demo, user.uid])
 

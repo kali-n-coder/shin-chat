@@ -163,8 +163,7 @@ service cloud.firestore {
 
     match /friendships/{friendshipId} {
       allow read: if isActive()
-        && request.auth.uid in resource.data.memberIds
-        && notBlocked(resource.data.memberIds[0], resource.data.memberIds[1]);
+        && request.auth.uid in resource.data.memberIds;
       allow create: if isActive()
         && request.resource.data.keys().hasOnly(["memberIds", "memberProfiles", "createdAt", "updatedAt"])
         && request.resource.data.memberIds is list
