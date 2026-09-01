@@ -36,9 +36,9 @@ firebase firestore:databases:create "(default)" --location asia-northeast1 --edi
 firebase deploy --only firestore
 ```
 
-Firebase Console の Authentication → Sign-in method で「メール/パスワード」と「Google」を有効にします。Settings → Authorized domains へ `kali-n-coder.github.io` を追加します。
+`firebase init auth` と `firebase deploy --only auth` で「メール/パスワード」と「Google」を有効にします。公開先の `kali-n-coder.github.io` はAuthenticationの承認済みドメインへ追加します。
 
-最初の管理者は `firestore.rules` と `VITE_ADMIN_EMAIL` に同じメールアドレスを設定し、そのメールを所有している Google アカウントでログインします。メールの所有確認が取れた場合だけ管理者になります。その後、管理ページから別ユーザーへ管理権限を付与できます。
+最初の管理者はFirebase Authのカスタムクレーム `admin: true` で安全に指定します。メールアドレスをソースコードやGitHub変数へ保存しません。最初の管理者がログインしたあとは、管理ページから別ユーザーへ管理権限を付与できます。
 
 ## GitHub Pages
 
@@ -50,7 +50,6 @@ Firebase Console の Authentication → Sign-in method で「メール/パスワ
 - `VITE_FIREBASE_STORAGE_BUCKET`
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
-- `VITE_ADMIN_EMAIL`
 
 ## 無料枠向けの設計
 

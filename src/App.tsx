@@ -29,7 +29,7 @@ import {
   type DocumentData,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
-import { adminEmail, auth, db, isFirebaseConfigured } from './lib/firebase'
+import { auth, db, isFirebaseConfigured } from './lib/firebase'
 import { formatDateTime, formatMessageTime, friendlyAuthError, initials } from './lib/format'
 import type { ChatMessage, DirectConversation, MessageReport, PublicProfile, Room, UserProfile, UserRole, UserStatus } from './types'
 import { Icon } from './components/Icon'
@@ -71,9 +71,8 @@ async function ensureUserProfile(user: User): Promise<void> {
   if (!db) return
   const ref = doc(db, 'users', user.uid)
   const snapshot = await getDoc(ref)
-  const bootstrapAdmin = Boolean(
-    adminEmail && user.emailVerified && user.email?.toLowerCase() === adminEmail,
-  )
+  const tokenResult = await user.getIdTokenResult()
+  const bootstrapAdmin = tokenResult.claims.admin === true
 
   if (!snapshot.exists()) {
     await setDoc(ref, {

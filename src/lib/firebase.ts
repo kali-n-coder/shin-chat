@@ -19,4 +19,3 @@ const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : null
 
 export const auth = app ? getAuth(app) : null
 export const db = app ? getFirestore(app) : null
-export const adminEmail = import.meta.env.VITE_ADMIN_EMAIL?.trim().toLowerCase() ?? ''

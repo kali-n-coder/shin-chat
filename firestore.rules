@@ -8,8 +8,7 @@ service cloud.firestore {
 
     function isBootstrapAdmin() {
       return signedIn()
-        && request.auth.token.email_verified == true
-        && request.auth.token.email == "christianwolff365@gmail.com";
+        && request.auth.token.admin == true;
     }
 
     function currentUser() {
