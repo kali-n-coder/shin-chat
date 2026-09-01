@@ -1,6 +1,6 @@
 import type { SVGProps } from 'react'
 
-export type IconName = 'hash' | 'send' | 'users' | 'settings' | 'logout' | 'plus' | 'menu' | 'close' | 'shield' | 'flag' | 'more' | 'back' | 'check' | 'alert' | 'message'
+export type IconName = 'hash' | 'send' | 'users' | 'settings' | 'logout' | 'plus' | 'menu' | 'close' | 'shield' | 'flag' | 'more' | 'back' | 'check' | 'alert' | 'message' | 'bell' | 'reply' | 'download' | 'ban' | 'userMinus'
 
 const paths: Record<IconName, React.ReactNode> = {
   hash: <><path d="M10 3 8 21M16 3l-2 18M4 9h17M3 15h17" /></>,
@@ -18,6 +18,11 @@ const paths: Record<IconName, React.ReactNode> = {
   check: <><path d="m20 6-11 11-5-5" /></>,
   alert: <><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></>,
   message: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /></>,
+  bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></>,
+  reply: <><path d="m9 17-5-5 5-5" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" /></>,
+  download: <><path d="M12 3v12M7 10l5 5 5-5" /><path d="M5 21h14" /></>,
+  ban: <><circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" /></>,
+  userMinus: <><path d="M15 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><path d="M17 11h6" /></>,
 }
 
 interface IconProps extends SVGProps<SVGSVGElement> { name: IconName }
