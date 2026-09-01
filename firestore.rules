@@ -136,10 +136,18 @@ service cloud.firestore {
             && (request.resource.data.status == "accepted" || request.resource.data.status == "declined")
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "respondedAt"]))
           || (request.auth.uid == resource.data.fromUid
-            && resource.data.status != "pending"
+            && request.resource.data.keys().hasOnly(["fromUid", "toUid", "fromProfile", "toProfile", "status", "createdAt"])
+            && request.resource.data.fromUid == resource.data.fromUid
+            && request.resource.data.toUid == resource.data.toUid
             && request.resource.data.status == "pending"
             && notBlocked(resource.data.fromUid, resource.data.toUid)
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "createdAt"])));
+            && request.resource.data.fromProfile.displayName == get(/databases/$(database)/documents/publicProfiles/$(resource.data.fromUid)).data.displayName
+            && request.resource.data.fromProfile.photoURL == get(/databases/$(database)/documents/publicProfiles/$(resource.data.fromUid)).data.photoURL
+            && request.resource.data.fromProfile.friendCode == get(/databases/$(database)/documents/publicProfiles/$(resource.data.fromUid)).data.friendCode
+            && request.resource.data.toProfile.displayName == get(/databases/$(database)/documents/publicProfiles/$(resource.data.toUid)).data.displayName
+            && request.resource.data.toProfile.photoURL == get(/databases/$(database)/documents/publicProfiles/$(resource.data.toUid)).data.photoURL
+            && request.resource.data.toProfile.friendCode == get(/databases/$(database)/documents/publicProfiles/$(resource.data.toUid)).data.friendCode
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "createdAt", "respondedAt", "fromProfile", "toProfile"])));
       allow delete: if false;
     }
 

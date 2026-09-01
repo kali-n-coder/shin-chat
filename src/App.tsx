@@ -781,8 +781,7 @@ function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick
     setFeedback('')
     try {
       const requestRef = doc(db, 'friendRequests', `${user.uid}_${target.id}`)
-      if ((await getDoc(requestRef)).exists()) await updateDoc(requestRef, { status: 'pending', createdAt: serverTimestamp() })
-      else await setDoc(requestRef, { fromUid: user.uid, toUid: target.id, status: 'pending', fromProfile: { displayName: profile.displayName, photoURL: profile.photoURL, friendCode: ownCode }, toProfile: { displayName: target.displayName, photoURL: target.photoURL, friendCode: target.friendCode }, createdAt: serverTimestamp() })
+      await setDoc(requestRef, { fromUid: user.uid, toUid: target.id, status: 'pending', fromProfile: { displayName: profile.displayName, photoURL: profile.photoURL, friendCode: ownCode }, toProfile: { displayName: target.displayName, photoURL: target.photoURL, friendCode: target.friendCode }, createdAt: serverTimestamp() })
       setFeedback('友達申請を送りました。')
     } catch (error) { setFeedback(friendlyAuthError(error)) } finally { setBusyId('') }
   }
