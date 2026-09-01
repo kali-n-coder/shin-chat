@@ -842,10 +842,23 @@ function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick
     try {
       if (accept) {
         const friendshipId = pairId(request.fromUid, request.toUid)
+        const [fromProfileSnapshot, toProfileSnapshot] = await Promise.all([
+          getDoc(doc(db, 'publicProfiles', request.fromUid)),
+          getDoc(doc(db, 'publicProfiles', request.toUid)),
+        ])
+        if (!fromProfileSnapshot.exists() || !toProfileSnapshot.exists()) {
+          setFeedback('相手のプロフィールを確認できませんでした。再読み込みしてお試しください。')
+          return
+        }
+        const fromProfile = fromProfileSnapshot.data() as Omit<PublicProfile, 'id'>
+        const toProfile = toProfileSnapshot.data() as Omit<PublicProfile, 'id'>
         const batch = writeBatch(db)
         batch.set(doc(db, 'friendships', friendshipId), {
           memberIds: [request.fromUid, request.toUid].sort(),
-          memberProfiles: { [request.fromUid]: request.fromProfile, [request.toUid]: request.toProfile },
+          memberProfiles: {
+            [request.fromUid]: { displayName: fromProfile.displayName, photoURL: fromProfile.photoURL, friendCode: fromProfile.friendCode },
+            [request.toUid]: { displayName: toProfile.displayName, photoURL: toProfile.photoURL, friendCode: toProfile.friendCode },
+          },
           createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         })
         batch.update(doc(db, 'friendRequests', request.id), { status: 'accepted', respondedAt: serverTimestamp() })
