@@ -438,7 +438,10 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
         conversationsById.set(snapshot.id, conversation)
       } else conversationsById.delete(snapshot.id)
       syncConversations()
-    }, () => setNotice('個別チャットを読み込めませんでした。')))
+    }, () => {
+      conversationsById.delete(friendshipId)
+      syncConversations()
+    }))
     return () => stops.forEach((stop) => stop())
   }, [demo, friendshipIds, user.uid])
 
@@ -491,7 +494,7 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
 
   useEffect(() => {
     if (demo) return
-    if (!db || !activeId) return
+    if (!db || !activeId || (activeKind === 'conversation' && !friendshipIds.includes(activeId))) return
     setOlderMessages([])
     setOldestCursor(null)
     const parentCollection = activeKind === 'conversation' ? 'conversations' : 'rooms'
@@ -502,7 +505,7 @@ function ChatShell({ user, profile, demo = false }: { user: Pick<User, 'uid'>; p
       setHasOlder(snapshot.size === 50)
       requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
     }, () => setNotice('メッセージを読み込めませんでした。'))
-  }, [activeId, activeKind, demo])
+  }, [activeId, activeKind, demo, friendshipIds])
 
   const loadOlder = async () => {
     if (demo) { setHasOlder(false); setNotice('プレビューでは、ここにさらに過去のメッセージが追加されます。'); return }
@@ -655,6 +658,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 function ProfileDialog({ profile, onClose, demo = false }: { profile: UserProfile; onClose: () => void; demo?: boolean }) {
   const [name, setName] = useState(profile.displayName)
   const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState('')
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => localStorage.getItem(NOTIFICATION_KEY) === 'true' && 'Notification' in window && Notification.permission === 'granted')
   const [installAvailable, setInstallAvailable] = useState(Boolean(pendingInstallPrompt))
   const save = async (event: FormEvent) => {
@@ -663,10 +667,17 @@ function ProfileDialog({ profile, onClose, demo = false }: { profile: UserProfil
     if (demo) { onClose(); return }
     if (!db) return
     setBusy(true)
-    await updateDoc(doc(db, 'users', profile.id), { displayName: name.trim(), lastSeenAt: serverTimestamp() })
-    await setDoc(doc(db, 'publicProfiles', profile.id), { displayName: name.trim(), photoURL: profile.photoURL, updatedAt: serverTimestamp() }, { merge: true })
-    if (auth?.currentUser) await updateProfile(auth.currentUser, { displayName: name.trim() })
-    onClose()
+    setFeedback('')
+    try {
+      await updateDoc(doc(db, 'users', profile.id), { displayName: name.trim(), lastSeenAt: serverTimestamp() })
+      await setDoc(doc(db, 'publicProfiles', profile.id), { displayName: name.trim(), photoURL: profile.photoURL, updatedAt: serverTimestamp() }, { merge: true })
+      if (auth?.currentUser) await updateProfile(auth.currentUser, { displayName: name.trim() })
+      onClose()
+    } catch (error) {
+      setFeedback(friendlyAuthError(error))
+    } finally {
+      setBusy(false)
+    }
   }
   const toggleNotifications = async () => {
     if (!('Notification' in window)) return
@@ -688,7 +699,7 @@ function ProfileDialog({ profile, onClose, demo = false }: { profile: UserProfil
     setInstallAvailable(Boolean(pendingInstallPrompt))
   }
   const friendCode = friendCodeForUid(profile.id)
-  return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><div className="friend-code-card"><span>あなたのNagi ID</span><strong>{friendCode}</strong><button type="button" className="small-button" onClick={() => navigator.clipboard.writeText(friendCode)}>コピー</button></div><div className="app-settings"><button type="button" onClick={toggleNotifications}><Icon name="bell" /><span><strong>ブラウザ通知</strong><small>アプリを開いている間に新着を通知</small></span><b className={notificationsEnabled ? 'toggle-on' : ''}>{notificationsEnabled ? 'ON' : 'OFF'}</b></button>{installAvailable && <button type="button" onClick={installApp}><Icon name="download" /><span><strong>Nagiをインストール</strong><small>ホーム画面からアプリとして開く</small></span><Icon name="back" className="rotate-180" /></button>}</div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label><button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
+  return <Modal title="プロフィール" onClose={onClose}><div className="profile-hero"><Avatar name={profile.displayName} photoURL={profile.photoURL} size="lg" /><div><strong>{profile.displayName}</strong><span>{profile.email}</span></div></div><div className="friend-code-card"><span>あなたのNagi ID</span><strong>{friendCode}</strong><button type="button" className="small-button" onClick={() => navigator.clipboard.writeText(friendCode)}>コピー</button></div><div className="app-settings"><button type="button" onClick={toggleNotifications}><Icon name="bell" /><span><strong>ブラウザ通知</strong><small>アプリを開いている間に新着を通知</small></span><b className={notificationsEnabled ? 'toggle-on' : ''}>{notificationsEnabled ? 'ON' : 'OFF'}</b></button>{installAvailable && <button type="button" onClick={installApp}><Icon name="download" /><span><strong>Nagiをインストール</strong><small>ホーム画面からアプリとして開く</small></span><Icon name="back" className="rotate-180" /></button>}</div><form className="modal-form" onSubmit={save}><label>表示名<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} required /></label>{feedback && <p className="dialog-feedback" role="status">{feedback}</p>}<button className="button button--primary button--full" disabled={busy}>保存</button><button type="button" className="button button--ghost button--full" onClick={() => auth && signOut(auth)}><Icon name="logout" />ログアウト</button></form></Modal>
 }
 
 function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick<User, 'uid'>; profile: UserProfile; demo: boolean; onClose: () => void; onCreated: (id: string) => void }) {
@@ -739,7 +750,7 @@ function FriendsDialog({ user, profile, demo, onClose, onCreated }: { user: Pick
         await setDoc(ref, {
           participantIds: [user.uid, target.id].sort(),
           participantProfiles: {
-            [user.uid]: { displayName: profile.displayName, photoURL: profile.photoURL },
+            [user.uid]: { displayName: friendship.memberProfiles[user.uid].displayName, photoURL: friendship.memberProfiles[user.uid].photoURL },
             [target.id]: { displayName: target.displayName, photoURL: target.photoURL },
           },
           lastMessage: '', lastSenderId: '', unreadCounts: { [user.uid]: 0, [target.id]: 0 }, readAt: { [user.uid]: serverTimestamp(), [target.id]: serverTimestamp() }, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastMessageAt: serverTimestamp(),
@@ -874,16 +885,20 @@ function NewRoomDialog({ user, onClose, onCreated }: { user: User; onClose: () =
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState('')
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!db || !name.trim()) return
     setBusy(true)
+    setFeedback('')
     try {
       const room = await addDoc(collection(db, 'rooms'), { name: name.trim(), description: description.trim(), type: 'public', isArchived: false, createdBy: user.uid, createdAt: serverTimestamp() })
       onCreated(room.id)
+    } catch (error) {
+      setFeedback(friendlyAuthError(error))
     } finally { setBusy(false) }
   }
-  return <Modal title="チャンネルを作成" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>チャンネル名<input value={name} onChange={(e) => setName(e.target.value)} required maxLength={40} placeholder="例：雑談" /></label><label>説明（任意）<input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={100} placeholder="どんな場所かをひとこと" /></label><button className="button button--primary button--full" disabled={busy}>作成する</button></form></Modal>
+  return <Modal title="チャンネルを作成" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>チャンネル名<input value={name} onChange={(e) => setName(e.target.value)} required maxLength={40} placeholder="例：雑談" /></label><label>説明（任意）<input value={description} onChange={(e) => setDescription(e.target.value)} maxLength={100} placeholder="どんな場所かをひとこと" /></label>{feedback && <p className="dialog-feedback" role="status">{feedback}</p>}<button className="button button--primary button--full" disabled={busy}>作成する</button></form></Modal>
 }
 
 function AdminPanel({ user, profile, demo = false }: { user: Pick<User, 'uid'>; profile: UserProfile; demo?: boolean }) {
@@ -896,9 +911,9 @@ function AdminPanel({ user, profile, demo = false }: { user: Pick<User, 'uid'>; 
   useEffect(() => {
     if (demo) return
     if (!db || profile.role !== 'admin') return
-    const stopUsers = onSnapshot(collection(db, 'users'), (snapshot) => setUsers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as UserProfile))))
-    const stopRooms = onSnapshot(collection(db, 'rooms'), (snapshot) => setRooms(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Room))))
-    const stopReports = onSnapshot(query(collection(db, 'reports'), where('status', '==', 'pending')), (snapshot) => setReports(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as MessageReport))))
+    const stopUsers = onSnapshot(collection(db, 'users'), (snapshot) => setUsers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as UserProfile))), () => setNotice('ユーザー一覧を読み込めませんでした。'))
+    const stopRooms = onSnapshot(collection(db, 'rooms'), (snapshot) => setRooms(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Room))), () => setNotice('チャンネル一覧を読み込めませんでした。'))
+    const stopReports = onSnapshot(query(collection(db, 'reports'), where('status', '==', 'pending')), (snapshot) => setReports(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as MessageReport))), () => setNotice('報告一覧を読み込めませんでした。'))
     return () => { stopUsers(); stopRooms(); stopReports() }
   }, [demo, profile.role])
 
@@ -908,22 +923,28 @@ function AdminPanel({ user, profile, demo = false }: { user: Pick<User, 'uid'>; 
     if (target.id === user.uid) return
     if (demo) { setUsers((current) => current.map((item) => item.id === target.id ? { ...item, status } : item)); setNotice(status === 'active' ? 'プレビュー：利用を再開しました。' : 'プレビュー：アカウントを停止しました。'); return }
     if (!db) return
-    await updateDoc(doc(db, 'users', target.id), { status })
-    setNotice(status === 'active' ? '利用を再開しました。' : 'アカウントを停止しました。')
+    try {
+      await updateDoc(doc(db, 'users', target.id), { status })
+      setNotice(status === 'active' ? '利用を再開しました。' : 'アカウントを停止しました。')
+    } catch (error) { setNotice(friendlyAuthError(error)) }
   }
   const setUserRole = async (target: UserProfile, role: UserRole) => {
     if (target.id === user.uid) return
     if (demo) { setUsers((current) => current.map((item) => item.id === target.id ? { ...item, role } : item)); setNotice('プレビュー：権限を更新しました。'); return }
     if (!db) return
-    await updateDoc(doc(db, 'users', target.id), { role })
-    setNotice('権限を更新しました。')
+    try {
+      await updateDoc(doc(db, 'users', target.id), { role })
+      setNotice('権限を更新しました。')
+    } catch (error) { setNotice(friendlyAuthError(error)) }
   }
   const resolveReport = async (report: MessageReport, hide: boolean) => {
     if (demo) { setReports((current) => current.filter((item) => item.id !== report.id)); setNotice(hide ? 'プレビュー：メッセージを非表示にしました。' : 'プレビュー：報告を却下しました。'); return }
     if (!db) return
-    if (hide) await updateDoc(doc(db, report.targetType === 'conversation' ? 'conversations' : 'rooms', report.targetId, 'messages', report.messageId), { isHidden: true })
-    await updateDoc(doc(db, 'reports', report.id), { status: hide ? 'resolved' : 'dismissed', resolvedAt: serverTimestamp(), resolvedBy: user.uid })
-    setNotice(hide ? 'メッセージを非表示にしました。' : '報告を却下しました。')
+    try {
+      if (hide) await updateDoc(doc(db, report.targetType === 'conversation' ? 'conversations' : 'rooms', report.targetId, 'messages', report.messageId), { isHidden: true })
+      await updateDoc(doc(db, 'reports', report.id), { status: hide ? 'resolved' : 'dismissed', resolvedAt: serverTimestamp(), resolvedBy: user.uid })
+      setNotice(hide ? 'メッセージを非表示にしました。' : '報告を却下しました。')
+    } catch (error) { setNotice(friendlyAuthError(error)) }
   }
 
   return (

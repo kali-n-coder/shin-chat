@@ -115,8 +115,8 @@ service cloud.firestore {
         && (request.resource.data.friendshipId == request.auth.uid + "_" + request.resource.data.blockedUid
           || request.resource.data.friendshipId == request.resource.data.blockedUid + "_" + request.auth.uid)
         && !existsAfter(/databases/$(database)/documents/friendships/$(request.resource.data.friendshipId))
-        && request.resource.data.blockedProfile.displayName == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.blockedUid)).data.displayName
-        && request.resource.data.blockedProfile.friendCode == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.blockedUid)).data.friendCode;
+        && request.resource.data.blockedProfile
+          == get(/databases/$(database)/documents/friendships/$(request.resource.data.friendshipId)).data.memberProfiles[request.resource.data.blockedUid];
       allow delete: if isActive() && request.auth.uid == resource.data.blockerUid;
       allow update: if false;
     }
@@ -191,23 +191,29 @@ service cloud.firestore {
     match /conversations/{conversationId} {
       allow read: if isActive()
         && exists(/databases/$(database)/documents/friendships/$(conversationId))
-        && notBlocked(resource.data.participantIds[0], resource.data.participantIds[1])
-        && request.auth.uid in resource.data.participantIds;
+        && request.auth.uid in get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberIds
+        && notBlocked(
+          get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberIds[0],
+          get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberIds[1]);
       allow create: if isActive()
         && request.resource.data.keys().hasOnly(["participantIds", "participantProfiles", "lastMessage", "lastSenderId", "unreadCounts", "readAt", "createdAt", "updatedAt", "lastMessageAt"])
         && request.resource.data.participantIds is list
         && request.resource.data.participantIds.size() == 2
         && request.auth.uid in request.resource.data.participantIds
         && request.resource.data.participantIds[0] != request.resource.data.participantIds[1]
-        && notBlocked(request.resource.data.participantIds[0], request.resource.data.participantIds[1])
         && exists(/databases/$(database)/documents/friendships/$(conversationId))
         && request.resource.data.participantIds == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberIds
+        && notBlocked(request.resource.data.participantIds[0], request.resource.data.participantIds[1])
         && request.resource.data.participantProfiles is map
         && request.resource.data.participantProfiles.keys().hasAll(request.resource.data.participantIds)
         && request.resource.data.participantProfiles[request.resource.data.participantIds[0]].displayName
-          == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.participantIds[0])).data.displayName
+          == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberProfiles[request.resource.data.participantIds[0]].displayName
+        && request.resource.data.participantProfiles[request.resource.data.participantIds[0]].photoURL
+          == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberProfiles[request.resource.data.participantIds[0]].photoURL
         && request.resource.data.participantProfiles[request.resource.data.participantIds[1]].displayName
-          == get(/databases/$(database)/documents/publicProfiles/$(request.resource.data.participantIds[1])).data.displayName
+          == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberProfiles[request.resource.data.participantIds[1]].displayName
+        && request.resource.data.participantProfiles[request.resource.data.participantIds[1]].photoURL
+          == get(/databases/$(database)/documents/friendships/$(conversationId)).data.memberProfiles[request.resource.data.participantIds[1]].photoURL
         && request.resource.data.lastMessage == ""
         && request.resource.data.lastSenderId == ""
         && request.resource.data.unreadCounts is map
